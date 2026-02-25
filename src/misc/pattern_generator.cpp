@@ -12,7 +12,7 @@
 #include <iostream>
 
 const int INF = 1145141919;
-const int NUM = 64;  // 图案数
+const int NUM = 32;  // 图案数
 
 int main(){
     // 把 4x4 的 mask 拓展为 8x8 的 mask
@@ -131,3 +131,11 @@ int main(){
     printf("};\n");
     show_patterns(Dict, 8);
 }
+
+/*
+======================================
+Pattern Count: 64
+Min Hamming Distance: 20
+Error Tolerance: 9 flips
+======================================
+*/
