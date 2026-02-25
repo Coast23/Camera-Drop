@@ -1,7 +1,8 @@
 // Author: Coast23
 // Date: 2026-02-25
 /*
-Éú³É×îĞ¡ Hamming Distance ¾¡Á¿´óµÄÍ¼°¸¼¯¡£
+ç”Ÿæˆæœ€å° Hamming Distance å°½é‡å¤§çš„å›¾æ¡ˆé›†ã€‚
+ç”Ÿæˆçš„å›¾æ¡ˆé›†éœ€ç»è¿‡å®éªŒéªŒè¯æ–¹èƒ½ç”¨äºå®é™…ä½¿ç”¨ã€‚
 */
 
 #include <cstdio>
@@ -11,10 +12,10 @@
 #include <iostream>
 
 const int INF = 1145141919;
-const int NUM = 64;  // Í¼°¸Êı
+const int NUM = 64;  // å›¾æ¡ˆæ•°
 
 int main(){
-    // °Ñ 4x4 µÄ mask ÍØÕ¹Îª 8x8 µÄ mask
+    // æŠŠ 4x4 çš„ mask æ‹“å±•ä¸º 8x8 çš„ mask
     auto expand = [&](uint16_t mask) -> uint64_t {
         uint64_t res = 0;
         for(int r = 0; r < 4; ++r){
@@ -22,10 +23,10 @@ int main(){
                 if((mask >> (r * 4 + c)) & 1){
                     uint32_t r8 = r << 1;
                     uint32_t c8 = c << 1;
-                    res |= (1ULL << (r8 * 8 + c8));            // ×óÉÏ
-                    res |= (1ULL << (r8 * 8 + c8 + 1));        // ÓÒÉÏ
-                    res |= (1ULL << ((r8 + 1) * 8 + c8));      // ×óÏÂ
-                    res |= (1ULL << ((r8 + 1) * 8 + c8 + 1));  // ÓÒÏÂ
+                    res |= (1ULL << (r8 * 8 + c8));            // å·¦ä¸Š
+                    res |= (1ULL << (r8 * 8 + c8 + 1));        // å³ä¸Š
+                    res |= (1ULL << ((r8 + 1) * 8 + c8));      // å·¦ä¸‹
+                    res |= (1ULL << ((r8 + 1) * 8 + c8 + 1));  // å³ä¸‹
                 }
             }
         }
@@ -36,7 +37,7 @@ int main(){
         return __builtin_popcountll(x);
     };
 
-    // »ñÈ¡Í¼°¸¼¯µÄ×îĞ¡ Hamming Distance
+    // è·å–å›¾æ¡ˆé›†çš„æœ€å° Hamming Distance
     auto get_dist = [&](std::vector<uint16_t>& pick) -> int {
         int res = INF;
         int n = pick.size();
@@ -48,7 +49,7 @@ int main(){
         return res;
     };
 
-    // ´òÓ¡ patterns, col ÎªÃ¿ĞĞµÄÍ¼°¸Êı
+    // æ‰“å° patterns, col ä¸ºæ¯è¡Œçš„å›¾æ¡ˆæ•°
     auto show_patterns = [&](std::vector<uint64_t>& Dict, int col = 4) -> void {
         int n = Dict.size();
         int row = (n + col - 1) / col;
@@ -58,15 +59,15 @@ int main(){
         for(int i = 0; i < n; ++i){
             int rx = i / col;
             int cx = i % col;
-            int x = rx * 9, y = cx * 17; // (x, y) ÊÇ×óÉÏ½Ç * µÄ»­²¼×ø±ê
-            // »æÖÆ±ß¿ò
+            int x = rx * 9, y = cx * 17; // (x, y) æ˜¯å·¦ä¸Šè§’ * çš„ç”»å¸ƒåæ ‡
+            // ç»˜åˆ¶è¾¹æ¡†
             canva[x][y] = '*';
             canva[x][y + 17] = '*';
             canva[x + 9][y] = '*';
             canva[x + 9][y + 17] = '*';
             for(int c = y + 1; c <= y + 16; ++c) canva[x][c] = '-', canva[x + 9][c] = '-';
             for(int r = x + 1; r <= x + 8; ++r) canva[r][y] = '|', canva[r][y + 17] = '|';
-            // »æÖÆ mask ¶ÔÓ¦µÄÍ¼°¸
+            // ç»˜åˆ¶ mask å¯¹åº”çš„å›¾æ¡ˆ
             for(int dr = 0; dr < 8; ++dr){
                 for(int dc = 0; dc < 8; ++dc){
                     if((Dict[i] >> (dr * 8 + dc)) & 1){
@@ -78,22 +79,22 @@ int main(){
         }
         for(auto& line : canva){
             for(auto& c : line){
-                if(c == '#') std::cout << "¨€"; // Fuck UTF-8 Characters
+                if(c == '#') std::cout << "â–ˆ"; // Fuck UTF-8 Characters
                 else putchar(c);
             }
             putchar('\n');
         }
     };
 
-    // 4x4 Í¼°¸ÖĞ£¬Ö»Ñ¡°×É«¸öÊıÔÚ 6~10 Ö®¼äµÄÍ¼°¸
+    // 4x4 å›¾æ¡ˆä¸­ï¼Œåªé€‰ç™½è‰²ä¸ªæ•°åœ¨ 6~10 ä¹‹é—´çš„å›¾æ¡ˆ
     std::vector<uint16_t> cand;
     for(int i = 0; i < (1 << 16); ++i){
         int p = popcnt(i);
         if(p >= 6 and p <= 10) cand.push_back(i);
     }
-    printf("Candidate size: %u\n", cand.size());
+  //  printf("Candidate size: %u\n", cand.size());
 
-    // ÇÕ¶¨µÚÒ»¸öÎªºÚ°×ÉÏÏÂ¶Ô°ëµÄÍ¼°¸¡£
+    // é’¦å®šç¬¬ä¸€ä¸ªä¸ºé»‘ç™½ä¸Šä¸‹å¯¹åŠçš„å›¾æ¡ˆã€‚
     std::vector<uint16_t> pick; pick.push_back(0x00FF);
     std::vector<int> dist(cand.size(), INF);
 
@@ -112,11 +113,12 @@ int main(){
         for(int i = 0; i < cand.size(); ++i) dist[i] = std::min(dist[i], popcnt(cand[i] ^ picked));
     }
     
-    int HammingDist = get_dist(pick) << 2; // 8x8 µÄ Hamming Distance ÊÇ 4x4 µÄ 4 ±¶
+    int HammingDist = get_dist(pick) << 2; // 8x8 çš„ Hamming Distance æ˜¯ 4x4 çš„ 4 å€
     std::vector<uint64_t> Dict;
     for(auto& mask4x4 : pick) Dict.push_back(expand(mask4x4));
 
     puts("======================================");
+    printf("Pattern Count: %d\n", NUM);
     printf("Min Hamming Distance: %d\n", HammingDist);
     printf("Error Tolerance: %d flips\n", (HammingDist - 1) >> 1);
     puts("======================================");
