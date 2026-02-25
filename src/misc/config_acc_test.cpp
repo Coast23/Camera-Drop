@@ -1,3 +1,9 @@
+// Author: Coast23
+// Date: 2026-02-26
+/*
+ÔÚ pattern_generator.cpp µÄ»ù´¡ÉÏ£¬²âÊÔ²»Í¬ÅäÖÃ£¨Í¼°¸¼¯´óĞ¡¡¢ÑÕÉ«Êı£©µÄ¿¹¸ÉÈÅÄÜÁ¦
+*/
+
 #include <cstdio>
 #include <vector>
 #include <random>
@@ -7,25 +13,25 @@
 #include <iostream>
 #include <opencv2/opencv.hpp>
 
-// å›ºå®šå‚æ•°
+// ¹Ì¶¨²ÎÊı
 const int GRID_SIZE = 112;
 const int STRIDE = 9;
 const int MARGIN = 8;
 const int IMG_SIZE = 1024;
 const int INF = 1145141919;
 
-// å›¾æ¡ˆæ•°å’Œé¢œè‰²æ•°å¯è°ƒï¼Œä½†å¿…é¡»æ˜¯ 2 çš„æ¬¡å¹‚ï¼Œä¸”é¢œè‰²æ•°ä¸èƒ½è¶…è¿‡ 8
-const int NUM_PATTERNS = 16;  // å›¾æ¡ˆæ•°
-const int NUM_COLORS = 8;     // é¢œè‰²æ•°
+// Í¼°¸ÊıºÍÑÕÉ«Êı¿Éµ÷£¬µ«±ØĞëÊÇ 2 µÄ´ÎÃİ£¬ÇÒÑÕÉ«Êı²»ÄÜ³¬¹ı 8
+const int NUM_PATTERNS = 16;  // Í¼°¸Êı
+const int NUM_COLORS = 4;     // ÑÕÉ«Êı
 
-// ä¿¡é“æ¨¡æ‹Ÿå¼€å…³
-const bool STIMULATE_MOIRE = true;      // æ‘©å°”çº¹
-const bool STIMULATE_BLUR = true;       // å¤±ç„¦æ¨¡ç³Š
-const bool STIMULATE_COLOR_CAST = true; // ç›¸æœºåè‰²
-const bool STIMULATE_NOISE = true;      // é«˜æ–¯ç™½å™ªå£°
+// ĞÅµÀÄ£Äâ¿ª¹Ø
+const bool STIMULATE_MOIRE = true;      // Ä¦¶ûÎÆ
+const bool STIMULATE_BLUR = true;       // Ê§½¹Ä£ºı
+const bool STIMULATE_COLOR_CAST = true; // Ïà»úÆ«É«
+const bool STIMULATE_NOISE = true;      // ¸ßË¹°×ÔëÉù
 
 std::vector<uint64_t> gen_dict(){
-    // æŠŠ 4x4 çš„ mask æ‹“å±•ä¸º 8x8 çš„ mask
+    // °Ñ 4x4 µÄ mask ÍØÕ¹Îª 8x8 µÄ mask
     auto expand = [&](uint16_t mask) -> uint64_t {
         uint64_t res = 0;
         for(int r = 0; r < 4; ++r){
@@ -33,10 +39,10 @@ std::vector<uint64_t> gen_dict(){
                 if((mask >> (r * 4 + c)) & 1){
                     uint32_t r8 = r << 1;
                     uint32_t c8 = c << 1;
-                    res |= (1ULL << (r8 * 8 + c8));            // å·¦ä¸Š
-                    res |= (1ULL << (r8 * 8 + c8 + 1));        // å³ä¸Š
-                    res |= (1ULL << ((r8 + 1) * 8 + c8));      // å·¦ä¸‹
-                    res |= (1ULL << ((r8 + 1) * 8 + c8 + 1));  // å³ä¸‹
+                    res |= (1ULL << (r8 * 8 + c8));            // ×óÉÏ
+                    res |= (1ULL << (r8 * 8 + c8 + 1));        // ÓÒÉÏ
+                    res |= (1ULL << ((r8 + 1) * 8 + c8));      // ×óÏÂ
+                    res |= (1ULL << ((r8 + 1) * 8 + c8 + 1));  // ÓÒÏÂ
                 }
             }
         }
@@ -47,7 +53,7 @@ std::vector<uint64_t> gen_dict(){
         return __builtin_popcountll(x);
     };
 
-    // è·å–å›¾æ¡ˆé›†çš„æœ€å° Hamming Distance
+    // »ñÈ¡Í¼°¸¼¯µÄ×îĞ¡ Hamming Distance
     auto get_dist = [&](std::vector<uint16_t>& pick) -> int {
         int res = INF;
         int n = pick.size();
@@ -59,14 +65,14 @@ std::vector<uint64_t> gen_dict(){
         return res;
     };
 
-    // 4x4 å›¾æ¡ˆä¸­ï¼Œåªé€‰ç™½è‰²ä¸ªæ•°åœ¨ 6~10 ä¹‹é—´çš„å›¾æ¡ˆ
+    // 4x4 Í¼°¸ÖĞ£¬Ö»Ñ¡°×É«¸öÊıÔÚ 6~10 Ö®¼äµÄÍ¼°¸
     std::vector<uint16_t> cand;
     for(int i = 0; i < (1 << 16); ++i){
         int p = popcnt(i);
         if(p >= 6 and p <= 10) cand.push_back(i);
     }
 
-    // é’¦å®šç¬¬ä¸€ä¸ªä¸ºé»‘ç™½ä¸Šä¸‹å¯¹åŠçš„å›¾æ¡ˆã€‚
+    // ÇÕ¶¨µÚÒ»¸öÎªºÚ°×ÉÏÏÂ¶Ô°ëµÄÍ¼°¸¡£
     std::vector<uint16_t> pick; pick.push_back(0x00FF);
     std::vector<int> dist(cand.size(), INF);
 
@@ -91,7 +97,7 @@ std::vector<uint64_t> gen_dict(){
 }
 
 int main(){
-    // å¿…é¡»æ˜¯ 2 çš„æ¬¡å¹‚
+    // ±ØĞëÊÇ 2 µÄ´ÎÃİ
     assert((NUM_PATTERNS & (NUM_PATTERNS - 1)) == 0);
     assert((NUM_COLORS & (NUM_COLORS - 1)) == 0);
 
@@ -108,7 +114,7 @@ int main(){
             case 4: return Vec3b(0, 0, 255);     // Red    (R)
             case 5: return Vec3b(255, 0, 0);     // Blue   (B)
             case 6: return Vec3b(255, 255, 255); // White
-            case 7: return Vec3b(0, 128, 255);   // Black çš„ä»£æ›¿
+            case 7: return Vec3b(0, 128, 255);   // Black µÄ´úÌæ
             default: return Vec3b(255, 255, 255);
         }
     };
@@ -143,24 +149,24 @@ int main(){
         return best;
     };
 
-    // å¸ƒå±€æ˜ å°„å™¨ï¼šåˆ¤æ–­æ˜¯å¦æ˜¯éç¼–ç åŒº
+    // ²¼¾ÖÓ³ÉäÆ÷£ºÅĞ¶ÏÊÇ·ñÊÇ·Ç±àÂëÇø
     auto is_reserved = [&](int r, int c) -> bool {
-        // å››ä¸ªè§’çš„ 7x7 å®šä½å—
+        // ËÄ¸ö½ÇµÄ 7x7 ¶¨Î»¿é
         if(r < 7 and c < 7) return true;         // TL
         if(r < 7 and c >= 105) return true;      // TR
         if(r >= 105 and c < 7) return true;      // BL
         if(r >= 105 and c >= 105) return true;   // BR
-        // é¢œè‰²æ ¡å‡†å—
+        // ÑÕÉ«Ğ£×¼¿é
         if(r == 0 and c >= 7 and c < 15) return true;
-        // å¸§å¤´é¢„ç•™åŒº
+        // Ö¡Í·Ô¤ÁôÇø
         if(r == 0 and c >= 15 and c < 47) return true;
-        return false; // å¯ç”¨æ•°æ®å—
+        return false; // ¿ÉÓÃÊı¾İ¿é
     };
 
     auto draw_finder_pattern = [&](Mat& img, int grid_r, int grid_c) -> void {
         int x = MARGIN + grid_c * STRIDE;
         int y = MARGIN + grid_r * STRIDE;
-        // å¤–åœˆç™½æ¡†èƒŒæ™¯(ç”±äºé»˜è®¤å…¨é»‘ï¼Œç›´æ¥å¡«ç™½è‰²å’Œå†…éƒ¨é»‘è‰²å³å¯)
+        // ÍâÈ¦°×¿ò±³¾°(ÓÉÓÚÄ¬ÈÏÈ«ºÚ£¬Ö±½ÓÌî°×É«ºÍÄÚ²¿ºÚÉ«¼´¿É)
         rectangle(img, Rect(x, y, 63, 63), Scalar(255, 255, 255), FILLED);
         rectangle(img, Rect(x + 9, y + 9, 45, 45), Scalar(0, 0, 0), FILLED);
         rectangle(img, Rect(x + 18, y + 18, 27, 27), Scalar(255, 255, 255), FILLED);
@@ -173,26 +179,26 @@ int main(){
     std::uniform_int_distribution<int> dist_data(0, NUM_PATTERNS * NUM_COLORS - 1);
     
     // ===========================
-    //      ç»˜åˆ¶å¸ƒå±€å®è§‚å…ƒç´ 
+    //      »æÖÆ²¼¾Öºê¹ÛÔªËØ
     // ===========================
     draw_finder_pattern(encoder_img, 0, 0);       // Top-Left
     draw_finder_pattern(encoder_img, 0, 105);     // Top-Right
     draw_finder_pattern(encoder_img, 105, 0);     // Bottom-Left
     draw_finder_pattern(encoder_img, 105, 105);   // Bottom-Right
 
-    // æ ‡å‡†é¢œè‰²å—
+    // ±ê×¼ÑÕÉ«¿é
     for(int i = 0; i < 8; ++i){
         int startX = MARGIN + (7 + i) * STRIDE;
         int startY = MARGIN + 0 * STRIDE;
         rectangle(encoder_img, Rect(startX, startY, 8, 8), get_color(i % NUM_COLORS), FILLED);
     }
-    // Frame Header é¢„ç•™
+    // Frame Header Ô¤Áô
     for(int i = 15; i < 47; ++i){
         rectangle(encoder_img, Rect(MARGIN + i * STRIDE, MARGIN, 8, 8), Scalar(128, 128, 128), FILLED);
     }
 
     // ===========================
-    //      ç¼–ç å®é™…æ•°æ®
+    //      ±àÂëÊµ¼ÊÊı¾İ
     // ===========================
 
     int valid_data_tiles = 0;
@@ -205,7 +211,7 @@ int main(){
           //  raw_data.push_back(data);
             raw_data[r * GRID_SIZE + c] = data;
 
-            // é«˜ C_BITS ä½ä¸ºé¢œè‰²ï¼Œä½ P_BITS ä½ä¸ºå›¾æ¡ˆ
+            // ¸ß C_BITS Î»ÎªÑÕÉ«£¬µÍ P_BITS Î»ÎªÍ¼°¸
             int pattern_idx = data & (NUM_PATTERNS - 1);
             int color_idx = data >> P_BITS;
         
@@ -229,12 +235,12 @@ int main(){
     imwrite(enc_file, encoder_img);
 
     // ===========================
-    //      æ¨¡æ‹Ÿæ¶åŠ£ä¿¡é“
+    //      Ä£Äâ¶ñÁÓĞÅµÀ
     // ===========================
 
     Mat camera_img = encoder_img.clone();
     
-    // æ¨¡æ‹Ÿæ‘©å°”çº¹
+    // Ä£ÄâÄ¦¶ûÎÆ
     auto stimulate_moire = [](Mat& camera_img) -> void {
         for(int r = 0; r < IMG_SIZE; ++r) {
             for(int c = 0; c < IMG_SIZE; ++c) {
@@ -247,24 +253,24 @@ int main(){
         }
     };
 
-    // æ¨¡æ‹Ÿå¤±ç„¦æ¨¡ç³Š
+    // Ä£ÄâÊ§½¹Ä£ºı
     auto stimulate_blur = [](Mat& camera_img) -> void {
         GaussianBlur(camera_img, camera_img, Size(5, 5), 1.2); 
     };
 
-    // æ¨¡æ‹Ÿç›¸æœºåè‰²å’Œæ›å…‰åº•å™ª
+    // Ä£ÄâÏà»úÆ«É«ºÍÆØ¹âµ×Ôë
     auto stimulate_color_cast = [](Mat& camera_img) -> void {
         for(int r = 0; r < IMG_SIZE; ++r) {
             for(int c = 0; c < IMG_SIZE; ++c) {
                 Vec3b& px = camera_img.at<Vec3b>(r, c);
-                px[0] = saturate_cast<uchar>(px[0] * 0.8 + 50);  // Blue è¡°å‡
-                px[1] = saturate_cast<uchar>(px[1] * 0.9 + 50);  // Green è¡°å‡
-                px[2] = saturate_cast<uchar>(px[2] * 1.1 + 40);  // Red å¢å¼º
+                px[0] = saturate_cast<uchar>(px[0] * 0.8 + 50);  // Blue Ë¥¼õ
+                px[1] = saturate_cast<uchar>(px[1] * 0.9 + 50);  // Green Ë¥¼õ
+                px[2] = saturate_cast<uchar>(px[2] * 1.1 + 40);  // Red ÔöÇ¿
             }
         }
     };
     
-    // é«˜æ–¯ç™½å™ªå£°
+    // ¸ßË¹°×ÔëÉù
     auto stimulate_noise = [](Mat& camera_img) -> void {
         Mat noise(IMG_SIZE, IMG_SIZE, CV_8UC3);
         randn(noise, Scalar(0,0,0), Scalar(15,15,15)); 
@@ -280,7 +286,7 @@ int main(){
     imwrite(camera_file, camera_img);
 
     // ===========================
-    //      è§£ç ä¸è¯„æµ‹
+    //      ½âÂëÓëÆÀ²â
     // ===========================
 
     Mat gray_img;
