@@ -20,6 +20,15 @@ const int MARGIN = 8;
 const int IMG_SIZE = 1024;
 const int INF = 1145141919;
 
+const int ANCHOR_OUT_START = 2;
+const int ANCHOR_OUT_SIZE = 56;
+const int ANCHOR_MID_START = 7;
+const int ANCHOR_MID_SIZE = 42;
+const int ANCHOR_IN_START_NORMAL = 14;
+const int ANCHOR_IN_SIZE_NORMAL = 28;
+const int ANCHOR_IN_START_BR = 21;
+const int ANCHOR_IN_SIZE_BR = 14;
+
 // 图案数和颜色数可调，但必须是 2 的次幂，且颜色数不能超过 8
 const int NUM_PATTERNS = 16;  // 图案数
 const int NUM_COLORS = 4;     // 颜色数
@@ -152,24 +161,42 @@ int main(){
     // 布局映射器：判断是否是非编码区
     auto is_reserved = [&](int r, int c) -> bool {
         // 四个角的 7x7 定位块
-        if(r < 7 and c < 7) return true;         // TL
-        if(r < 7 and c >= 105) return true;      // TR
-        if(r >= 105 and c < 7) return true;      // BL
-        if(r >= 105 and c >= 105) return true;   // BR
+        if(r < 6 and c < 6) return true;         // TL
+        if(r < 6 and c > 105) return true;      // TR
+        if(r > 105 and c < 6) return true;      // BL
+        if(r > 105 and c > 105) return true;   // BR
         // 颜色校准块
-        if(r == 0 and c >= 7 and c < 15) return true;
+        if(r == 0 and c >= 6 and c < 14) return true;
         // 帧头预留区
-        if(r == 0 and c >= 15 and c < 47) return true;
+        if(r == 0 and c >= 14 and c < 46) return true;
         return false; // 可用数据块
     };
 
-    auto draw_finder_pattern = [&](Mat& img, int grid_r, int grid_c) -> void {
-        int x = MARGIN + grid_c * STRIDE;
-        int y = MARGIN + grid_r * STRIDE;
-        // 外圈白框背景(由于默认全黑，直接填白色和内部黑色即可)
-        rectangle(img, Rect(x, y, 63, 63), Scalar(255, 255, 255), FILLED);
-        rectangle(img, Rect(x + 9, y + 9, 45, 45), Scalar(0, 0, 0), FILLED);
-        rectangle(img, Rect(x + 18, y + 18, 27, 27), Scalar(255, 255, 255), FILLED);
+    auto draw_one_anchor = [&](Mat& img, const int x0, const int y0, const bool is_br = false) -> void {
+        const int ANCHOR_IN_START = is_br ? ANCHOR_IN_START_BR : ANCHOR_IN_START_NORMAL;
+        const int ANCHOR_IN_SIZE = is_br ? ANCHOR_IN_SIZE_BR : ANCHOR_IN_SIZE_NORMAL;
+        rectangle(img, Rect(x0, y0, ANCHOR_OUT_SIZE, ANCHOR_OUT_SIZE), Scalar(255, 255, 255), FILLED);
+        rectangle(img, Rect(x0 + ANCHOR_MID_START, y0 + ANCHOR_MID_START, ANCHOR_MID_SIZE, ANCHOR_MID_SIZE), Scalar(0, 0, 0), FILLED);
+        rectangle(img, Rect(x0 + ANCHOR_IN_START, y0 + ANCHOR_IN_START, ANCHOR_IN_SIZE, ANCHOR_IN_SIZE), Scalar(255, 255, 255), FILLED);
+    };
+
+    auto draw_anchors = [&](Mat& img) -> void {
+        constexpr int tl_x = ANCHOR_OUT_START;
+        constexpr int tl_y = ANCHOR_OUT_START;
+    
+        constexpr int tr_x = IMG_SIZE - ANCHOR_OUT_START - ANCHOR_OUT_SIZE;
+        constexpr int tr_y = ANCHOR_OUT_START;
+
+        constexpr int bl_x = ANCHOR_OUT_START;
+        constexpr int bl_y = IMG_SIZE - ANCHOR_OUT_START - ANCHOR_OUT_SIZE;
+
+        constexpr int br_x  = IMG_SIZE - ANCHOR_OUT_START - ANCHOR_OUT_SIZE;
+        constexpr int br_y  = IMG_SIZE - ANCHOR_OUT_START - ANCHOR_OUT_SIZE;
+        
+        draw_one_anchor(img, tl_x, tl_y);
+        draw_one_anchor(img, tr_x, tr_y);
+        draw_one_anchor(img, bl_x, bl_y);
+        draw_one_anchor(img, br_x, br_y, true);
     };
 
     Mat encoder_img(IMG_SIZE, IMG_SIZE, CV_8UC3, Scalar(0, 0, 0));
@@ -181,19 +208,16 @@ int main(){
     // ===========================
     //      绘制布局宏观元素
     // ===========================
-    draw_finder_pattern(encoder_img, 0, 0);       // Top-Left
-    draw_finder_pattern(encoder_img, 0, 105);     // Top-Right
-    draw_finder_pattern(encoder_img, 105, 0);     // Bottom-Left
-    draw_finder_pattern(encoder_img, 105, 105);   // Bottom-Right
+    draw_anchors(encoder_img);
 
     // 标准颜色块
     for(int i = 0; i < 8; ++i){
-        int startX = MARGIN + (7 + i) * STRIDE;
+        int startX = MARGIN + (6 + i) * STRIDE;
         int startY = MARGIN + 0 * STRIDE;
         rectangle(encoder_img, Rect(startX, startY, 8, 8), get_color(i % NUM_COLORS), FILLED);
     }
     // Frame Header 预留
-    for(int i = 15; i < 47; ++i){
+    for(int i = 14; i < 46; ++i){
         rectangle(encoder_img, Rect(MARGIN + i * STRIDE, MARGIN, 8, 8), Scalar(128, 128, 128), FILLED);
     }
 
