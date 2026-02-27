@@ -1,3 +1,8 @@
+// Author: Coast23
+// Date: 2026-02-27
+/*
+基于 Zstd 的打包与解包函数
+*/
 #pragma once
 
 #include <zstd.h>
