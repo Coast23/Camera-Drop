@@ -218,7 +218,7 @@ public:
         adaptiveThreshold(img, out, 255, ADAPTIVE_THRESH_GAUSSIAN_C, THRESH_BINARY, blockSize, 5);
     }
 
-    inline void preprocess(const Mat& img, Mat& out, const bool fast = true){
+    inline void preprocess(const Mat& img, Mat& out, const bool fast = false){
         Mat tmp;
         // 灰度图
         if(img.channels() >= 3) cvtColor(img, tmp, COLOR_BGR2GRAY);
@@ -264,7 +264,7 @@ public:
             // 4. 简单的几何验证
             RotatedRect rRect = minAreaRect(contours[i]);
             // 太小或太大的不要
-            if(rRect.size.width < 30 or rRect.size.height < 30) continue;
+            if(rRect.size.width < 50 or rRect.size.height < 50) continue;
             if(rRect.size.width > 100 or rRect.size.height > 100) continue;
             
             Mat roi = get_normalized_roi(img, rRect);
