@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Camera-Drop Scanner</title>
+<!-- coi-serviceworker：为不支持 COOP/COEP 的环境注入跨域头，启用 ORT 多线程 -->
+<script src="coi-serviceworker.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0f0f0f;
+    color: #e0e0e0;
+    font-family: system-ui, -apple-system, sans-serif;
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    max-height: -webkit-fill-available;
+    overflow: hidden;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #1a1a1a;
+    border-bottom: 1px solid #2a2a2a;
+    flex-shrink: 0;
+  }
+  header h1 { font-size: 0.95rem; font-weight: 600; white-space: nowrap; }
+  #statusBar {
+    flex: 1;
+    font-size: 0.7rem;
+    color: #777;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: right;
+  }
+  #loadBtn {
+    font-size: 0.75rem;
+    padding: 5px 10px;
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  #loadBtn.ready  { background: #16a34a; }
+  #loadBtn.loading { background: #9333ea; cursor: default; }
+
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px 6px 0 6px;
+    padding-bottom: calc(6px + env(safe-area-inset-bottom, 12px));
+    overflow: hidden;
+  }
+
+  .cam-wrap {
+    position: relative;
+    width: 100%;
+    flex: 1;
+    min-height: 0;
+    background: #000;
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  #video {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  #overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  #perfBar {
+    position: absolute;
+    bottom: 6px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.65rem;
+    color: rgba(255,255,255,0.7);
+    background: rgba(0,0,0,0.45);
+    padding: 2px 10px;
+    border-radius: 20px;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  #scanHint {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  #scanHint span {
+    font-size: 0.8rem;
+    color: rgba(255,255,255,0.5);
+    background: rgba(0,0,0,0.5);
+    padding: 6px 14px;
+    border-radius: 20px;
+  }
+  #scanHint.hidden { display: none; }
+
+  .results {
+    flex: 1;
+    min-height: 0;
+  }
+  .card {
+    height: 100%;
+    background: #1a1a1a;
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .card-title {
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    color: #666;
+    padding: 2px 7px;
+    background: #222;
+    flex-shrink: 0;
+  }
+  .card canvas {
+    flex: 1;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    background: #111;
+    padding: 3px;
+    transition: opacity 0.5s;
+  }
+
+  /* 初始化遮罩 */
+  #initOverlay {
+    position: fixed;
+    inset: 0;
+    background: #0f0f0f;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    z-index: 200;
+  }
+  #initOverlay.hidden { display: none; }
+  #initOverlay h2 { font-size: 1.1rem; }
+  #initMsg { font-size: 0.8rem; color: #888; }
+  .prog-wrap {
+    width: 220px;
+    height: 5px;
+    background: #333;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  #progBar {
+    height: 100%;
+    background: #2563eb;
+    width: 0%;
+    transition: width .3s;
+    border-radius: 3px;
+  }
+  #startBtn {
+    padding: 10px 28px;
+    background: #2563eb;
+    border: none;
+    color: #fff;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    display: none;
+  }
+  #startBtn:hover { background: #1d4ed8; }
+</style>
+</head>
+<body>
+
+<div id="initOverlay">
+  <h2>📷 Camera-Drop Scanner</h2>
+  <div id="initMsg">正在加载 OpenCV.js…</div>
+  <div class="prog-wrap"><div id="progBar"></div></div>
+  <button id="startBtn" onclick="onStart()">开始扫描</button>
+</div>
+
+<header>
+  <h1>📷 Camera-Drop</h1>
+  <span id="statusBar">初始化中…</span>
+  <button id="loadBtn" onclick="pickModel()">加载模型</button>
+</header>
+<main>
+  <div class="cam-wrap">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div id="perfBar">—</div>
+    <div id="scanHint"><span id="hintText">请加载 .onnx 模型</span></div>
+  </div>
+  <div class="results">
+    <div class="card">
+      <div class="card-title">
+        Deskewed
+        <button id="dlBtn" onclick="downloadDeskewed()" style="font-size:0.6rem;padding:1px 6px;background:#333;color:#aaa;border:1px solid #555;border-radius:4px;cursor:pointer;">保存</button>
+      </div>
+      <canvas id="deskewedCanvas"></canvas>
+      <div id="deskewHint" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,0.5);color:#888;font-size:0.8rem;display:flex;align-items:center;justify-content:center;pointer-events:none;"></div>
+    </div>
+  </div>
+</main>
+
+<input type="file" id="filePicker" accept=".onnx" style="display:none">
+
+<script src="ort.min.js"></script>
+<script>
+if (typeof SharedArrayBuffer === 'undefined') {
+  ort.env.wasm.numThreads = 1;
+}
+ort.env.wasm.wasmPaths = {
+  'ort-wasm-simd-threaded.wasm':      'ort-wasm-simd-threaded.wasm',
+  'ort-wasm-simd-threaded.jsep.wasm': 'ort-wasm-simd-threaded.jsep.wasm',
+};
+</script>
+<script src="opencv.js"></script>
+<script>
+var _cvWaitStart = Date.now();
+(function waitCv() {
+  if (typeof cv !== 'undefined' && cv.Mat) {
+    console.log('[CV] wasm ready after', Date.now() - _cvWaitStart, 'ms');
+    setTimeout(function() {
+      if (typeof onCvReady === 'function') onCvReady();
+    }, 0);
+  } else if (Date.now() - _cvWaitStart > 60000) {
+    console.error('[CV] wasm wait timeout (60s)');
+    setTimeout(function() {
+      if (typeof onCvError === 'function') onCvError(null);
+    }, 0);
+  } else {
+    setTimeout(waitCv, 100);
+  }
+})();
+</script>
+
+<script>
+'use strict';
+
+// ── 状态 ──────────────────────────────────────────────────────────
+let cvReady      = false;
+let ortSession   = null;
+let scanning     = false;
+let modelReady   = false;
+let modelDynamic = false;  // 模型是否支持动态输入尺寸
+
+const CONF = 0.35, NMS = 0.45;
+const INP        = 640;    // 模型固定输入尺寸（FP32 fallback 用）
+const INP_COARSE = 320;    // 阶段1：粗定位，动态模型支持此尺寸
+const INP_FINE   = 640;    // 阶段2：精检
+const FRAME_PAD  = 0.35;   // 裁图时在 frame 周围额外扩展的比例
+
+const CLASS_COLORS = ['#00ffff','#ffff00','#ff8800','#ff3366','#88ff00','#cc88ff'];
+const CLASS_NAMES  = ['frame','qr','anchor','anchor_br','qr_finder','hui'];
+
+// ── DOM ───────────────────────────────────────────────────────────
+const video    = document.getElementById('video');
+const overlay  = document.getElementById('overlay');
+const dskCvs   = document.getElementById('deskewedCanvas');
+const scanHint = document.getElementById('scanHint');
+const hintText = document.getElementById('hintText');
+const statusBar= document.getElementById('statusBar');
+const perfBar  = document.getElementById('perfBar');
+const loadBtn  = document.getElementById('loadBtn');
+const initOver = document.getElementById('initOverlay');
+const initMsg  = document.getElementById('initMsg');
+const progBar  = document.getElementById('progBar');
+const startBtn = document.getElementById('startBtn');
+
+function setMsg(m) { initMsg.textContent = m; }
+function setProg(v) { progBar.style.width = (v*100)+'%'; }
+function setStatus(m) { statusBar.textContent = m; }
+
+// ── OpenCV 回调（由 Module.onRuntimeInitialized 调用）────────────
+function onCvReady() {
+  cvReady = true;
+  console.log('[CV] ready, cv.Mat:', typeof cv.Mat);
+  setMsg('OpenCV 已就绪');
+  setProg(0.5);
+  startBtn.style.display = 'block';
+  setStatus('OpenCV 就绪');
+}
+
+function onCvError(event) {
+  const src = event && event.target ? event.target.src : 'opencv.js';
+  console.error('[CV] load error:', src);
+  setMsg('❌ OpenCV 加载失败: ' + src);
+  startBtn.textContent = '跳过 OpenCV，仅检测';
+  startBtn.style.display = 'block';
+  startBtn.style.background = '#b45309';
+}
+
+// ── 超时保底（30s）───────────────────────────────────────────────
+setTimeout(() => {
+  if (!cvReady) {
+    console.warn('[CV] timeout after 30s');
+    setMsg('⚠ OpenCV 加载超时，可跳过');
+    startBtn.textContent = '跳过 OpenCV，仅检测';
+    startBtn.style.display = 'block';
+    startBtn.style.background = '#b45309';
+  }
+}, 30000);
+
+// ── 初始界面"开始"按钮 ─────────────────────────────────────────
+async function onStart() {
+  startBtn.disabled = true;
+  setMsg('正在请求摄像头…');
+  const ok = await startCamera();
+  if (!ok) { startBtn.disabled = false; return; }
+  setMsg('摄像头就绪');
+  setProg(0.8);
+
+  // 加载动态FP32模型
+  const MODEL_CANDIDATES = ['model/combined.onnx'];
+  let modelLoaded = false;
+  for (const modelPath of MODEL_CANDIDATES) {
+    try {
+      setMsg(`正在加载 ${modelPath.split('/').pop()} …`);
+      const resp = await fetch(modelPath);
+      if (!resp.ok) continue;
+      const buf = await resp.arrayBuffer();
+      setProg(0.9);
+      setMsg('正在编译 WebAssembly…');
+      await createSession(buf);
+      setProg(1.0);
+      setMsg('完成');
+      await sleep(300);
+      initOver.classList.add('hidden');
+      onModelLoaded(modelPath.split('/').pop());
+      modelLoaded = true;
+      break;
+    } catch(e) {
+      console.warn(`Failed to load ${modelPath}:`, e);
+    }
+  }
+  if (!modelLoaded) {
+    setMsg('未找到默认模型，请点右上角"加载模型"手动选择 .onnx 文件');
+    setProg(1.0);
+    await sleep(800);
+    initOver.classList.add('hidden');
+    setStatus('请加载 .onnx 模型');
+  }
+}
+
+// ── 摄像头 ────────────────────────────────────────────────────────
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal:'environment' }, width:{ideal:1280}, height:{ideal:960} },
+      audio: false,
+    });
+    video.srcObject = stream;
+    await new Promise(r => { video.onloadedmetadata = r; });
+    await video.play();
+    return true;
+  } catch(e) {
+    setMsg('摄像头错误: ' + e.message);
+    setStatus('摄像头错误');
+    return false;
+  }
+}
+
+// ── 手动加载模型 ─────────────────────────────────────────────────
+function pickModel() {
+  document.getElementById('filePicker').click();
+}
+document.getElementById('filePicker').onchange = async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  loadBtn.textContent = '加载中…'; loadBtn.classList.add('loading');
+  try {
+    const buf = await f.arrayBuffer();
+    await createSession(buf);
+    onModelLoaded(f.name);
+  } catch(err) {
+    setStatus('模型加载失败: ' + err.message);
+    loadBtn.textContent = '加载模型'; loadBtn.classList.remove('loading');
+  }
+  e.target.value = '';
+};
+
+async function createSession(buf) {
+  ortSession = await ort.InferenceSession.create(buf, {
+    executionProviders: ['wasm'],
+    graphOptimizationLevel: 'all',
+  });
+}
+
+function onModelLoaded(name) {
+  modelReady = true;
+  modelDynamic = true;
+  console.log(`[model] loaded=${name}  dynamic=${modelDynamic}`);
+  loadBtn.textContent = '✓ ' + name.replace('.onnx','');
+  loadBtn.classList.remove('loading'); loadBtn.classList.add('ready');
+  setStatus('模型就绪');
+  scanHint.classList.add('hidden');
+  if (!scanning) { scanning = true; loop(); }
+}
+
+// ── 推理主循环 ────────────────────────────────────────────────────
+let fpsArr = [], lastT = performance.now();
+let inferBusy = false;
+
+async function loop() {
+  if (!scanning) return;
+  requestAnimationFrame(loop);   // 立即调度下一帧，不等推理完成
+  if (video.readyState < 2 || !ortSession) return;
+  if (inferBusy) return;         // 上一帧推理还没完，跳过
+  inferBusy = true;
+  const t0 = performance.now();
+  try {
+    const {dets, snapshot, vw, vh, t1ms, t2ms} = await infer();
+    draw(dets, snapshot, vw, vh);
+    const dt = performance.now() - t0;
+    fpsArr.push(1000/(performance.now()-lastT));
+    if (fpsArr.length > 12) fpsArr.shift();
+    lastT = performance.now();
+    const fps = (fpsArr.reduce((a,b)=>a+b,0)/fpsArr.length).toFixed(1);
+    const stage2str = t2ms != null ? `+${t2ms.toFixed(0)}` : '';
+    perfBar.textContent = `${fps}fps ${stage2str ? t1ms.toFixed(0)+'+'+t2ms.toFixed(0) : t1ms.toFixed(0)}ms`;
+  } catch(e) { console.warn(e); }
+  inferBusy = false;
+}
+
+// ── 复用缓冲区，避免每帧 GC ──────────────────────────────────────
+const _lbCache = {};   // key: INP → {canvas, ctx, f32}
+function _getLbBuf(INP) {
+  if (!_lbCache[INP]) {
+    const canvas = new OffscreenCanvas(INP, INP);
+    const ctx = canvas.getContext('2d');
+    _lbCache[INP] = {canvas, ctx, f32: new Float32Array(3*INP*INP)};
+  }
+  return _lbCache[INP];
+}
+
+// ── 工具：把 snapCanvas 缩放到 INP×INP letterbox，返回 Float32Array 和偏移 ──
+function letterbox(snapCanvas, INP) {
+  const vw = snapCanvas.width, vh = snapCanvas.height;
+  const scale = Math.min(INP/vw, INP/vh);
+  const nw = Math.round(vw*scale), nh = Math.round(vh*scale);
+  const px = (INP-nw)>>1, py = (INP-nh)>>1;
+  const {canvas: tmp, ctx: tc, f32} = _getLbBuf(INP);
+  tc.fillStyle = 'rgb(114,114,114)';
+  tc.fillRect(0,0,INP,INP);
+  tc.drawImage(snapCanvas, px, py, nw, nh);
+  const id = tc.getImageData(0,0,INP,INP);
+  const N = INP*INP;
+  const d = id.data;
+  for (let i=0;i<N;i++) {
+    f32[i]     = d[i*4]   /255;
+    f32[N+i]   = d[i*4+1] /255;
+    f32[2*N+i] = d[i*4+2] /255;
+  }
+  return {f32, scale, px, py, vw, vh};
+}
+
+// ── 工具：解析模型输出为检测框列表（坐标映射回原图空间）────────
+// onlyClass: 若传入数字，则只解析该类（加速粗定位）
+function parseOutput(out, scale, px, py, vw, vh, confThr, onlyClass) {
+  const od = out.data;
+  const [,d1,d2] = out.dims;
+  const numFeat  = d1 < d2 ? d1 : d2;
+  const numBoxes = d1 < d2 ? d2 : d1;
+  const rowMajor = d1 >= d2;
+  const nc = numFeat - 4;
+  const get = (bi,fi) => rowMajor ? od[bi*numFeat+fi] : od[fi*numBoxes+bi];
+
+  const boxes=[], scores=[], clsIds=[];
+  for (let i=0;i<numBoxes;i++) {
+    let bs=-1, bc=0;
+    for (let c=0;c<nc;c++) {
+      if (onlyClass !== undefined && c !== onlyClass) continue;
+      const s=get(i,4+c); if(s>bs){bs=s;bc=c;}
+    }
+    if (bs<confThr) continue;
+    const cx=get(i,0),cy=get(i,1),bw=get(i,2),bh=get(i,3);
+    boxes.push([
+      Math.max(0,(cx-bw/2-px)/scale),
+      Math.max(0,(cy-bh/2-py)/scale),
+      Math.min(vw,(cx+bw/2-px)/scale),
+      Math.min(vh,(cy+bh/2-py)/scale),
+    ]);
+    scores.push(bs); clsIds.push(bc);
+  }
+  const dets=[];
+  for (let c=0;c<nc;c++) {
+    if (onlyClass !== undefined && c !== onlyClass) continue;
+    const ci = boxes.map((_,i)=>i).filter(i=>clsIds[i]===c);
+    if (!ci.length) continue;
+    const kept = nmsJs(ci.map(i=>boxes[i]), ci.map(i=>scores[i]), NMS);
+    for (const k of kept)
+      dets.push({box:boxes[ci[k]], score:scores[ci[k]], cls:c});
+  }
+  return dets;
+}
+
+// ── 两阶段推理 ────────────────────────────────────────────────────
+// 阶段1：320×320 粗定位，只找 frame（cls=0）
+// 阶段2：把 frame 区域裁出来，640×640 精检，找锚点等所有类
+async function infer() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw||!vh) return {dets:[], snapshot:null, vw, vh, t1ms:0, t2ms:null};
+
+  // 快照（整帧，后续 deskew 和 detected 都用这张）
+  const snapCanvas = new OffscreenCanvas(vw, vh);
+  snapCanvas.getContext('2d').drawImage(video, 0, 0, vw, vh);
+  const snapshot = snapCanvas.getContext('2d').getImageData(0, 0, vw, vh);
+
+  // ── 阶段1：粗定位（动态模型用320，固定模型用640）────────────
+  const coarse = modelDynamic ? INP_COARSE : INP_FINE;
+  const _t1 = performance.now();
+  const c1 = letterbox(snapCanvas, coarse);
+  const res1 = await ortSession.run({
+    images: new ort.Tensor('float32', c1.f32, [1,3,coarse,coarse])
+  });
+  const dets1 = parseOutput(res1['output0'], c1.scale, c1.px, c1.py, vw, vh, CONF, 0);  // 只找 frame
+  const t1ms = performance.now() - _t1;
+  console.log(`[infer] stage1 ${t1ms.toFixed(0)}ms  dets=${dets1.length}  frames=${dets1.filter(d=>d.cls===0).length}`);
+
+  // 找置信度最高的 frame
+  let bestFrame = null;
+  for (const d of dets1) if (d.cls===0 && (!bestFrame||d.score>bestFrame.score)) bestFrame=d;
+
+  // 没找到 frame：只返回粗检结果（继续扫描）
+  if (!bestFrame) {
+    console.log('[infer] no frame in stage1, returning');
+    return {dets: dets1, snapshot, vw, vh, t1ms, t2ms: null};
+  }
+
+  // ── 阶段2：裁图精检 640×640 ──────────────────────────────────
+  const [fx1,fy1,fx2,fy2] = bestFrame.box;
+  const fw = fx2-fx1, fh = fy2-fy1;
+  const pad = Math.max(fw,fh) * FRAME_PAD;
+  const cx1 = Math.max(0, Math.round(fx1-pad));
+  const cy1 = Math.max(0, Math.round(fy1-pad));
+  const cx2 = Math.min(vw, Math.round(fx2+pad));
+  const cy2 = Math.min(vh, Math.round(fy2+pad));
+  const cw = cx2-cx1, ch = cy2-cy1;
+  console.log(`[infer] frame=${bestFrame.score.toFixed(2)} crop=[${cx1},${cy1},${cx2},${cy2}] ${cw}x${ch}`);
+
+  // 从快照裁出子图
+  const fullCanvas = new OffscreenCanvas(vw, vh);
+  fullCanvas.getContext('2d').putImageData(snapshot, 0, 0);
+  const cropCanvas = new OffscreenCanvas(cw, ch);
+  cropCanvas.getContext('2d').drawImage(fullCanvas, cx1, cy1, cw, ch, 0, 0, cw, ch);
+
+  const _t2 = performance.now();
+  const c2 = letterbox(cropCanvas, INP_FINE);
+  const res2 = await ortSession.run({
+    images: new ort.Tensor('float32', c2.f32, [1,3,INP_FINE,INP_FINE])
+  });
+  const t2ms = performance.now() - _t2;
+  const dets2raw = parseOutput(res2['output0'], c2.scale, c2.px, c2.py, cw, ch, CONF);
+  console.log(`[infer] stage2 ${t2ms.toFixed(0)}ms  dets=${dets2raw.length}`);
+
+  // 坐标加回裁图偏移，映射回原图空间
+  const dets2 = dets2raw.map(d => ({
+    ...d,
+    box: [d.box[0]+cx1, d.box[1]+cy1, d.box[2]+cx1, d.box[3]+cy1]
+  }));
+
+  const hasFrame2 = dets2.some(d=>d.cls===0);
+  const finalDets = hasFrame2
+    ? dets2
+    : [bestFrame, ...dets2.filter(d=>d.cls!==0)];
+
+  return {dets: finalDets.sort((a,b)=>b.score-a.score), snapshot, vw, vh, t1ms, t2ms};
+}
+
+function nmsJs(boxes, scores, thr) {
+  const ord = [...scores.keys()].sort((a,b)=>scores[b]-scores[a]);
+  const sup = new Uint8Array(boxes.length);
+  const keep=[];
+  for (const i of ord) {
+    if (sup[i]) continue; keep.push(i);
+    for (const j of ord) {
+      if (sup[j]||j===i) continue;
+      if (iou(boxes[i],boxes[j])>thr) sup[j]=1;
+    }
+  }
+  return keep;
+}
+function iou(a,b) {
+  const ix1=Math.max(a[0],b[0]),iy1=Math.max(a[1],b[1]);
+  const ix2=Math.min(a[2],b[2]),iy2=Math.min(a[3],b[3]);
+  if (ix2<=ix1||iy2<=iy1) return 0;
+  const inter=(ix2-ix1)*(iy2-iy1);
+  return inter/((a[2]-a[0])*(a[3]-a[1])+(b[2]-b[0])*(b[3]-b[1])-inter);
+}
+
+// ── 绘制 ──────────────────────────────────────────────────────────
+function draw(dets, snapshot, vw, vh) {
+  if (!vw||!vh) return;
+  // 清空 overlay（不画检测框）
+  const oc = overlay.getContext('2d');
+  oc.clearRect(0, 0, overlay.width, overlay.height);
+
+  if (cvReady && snapshot) deskew(dets, snapshot, vw, vh);
+}
+
+function deskew(dets, snapshot, vw, vh) {
+  let frame=null;
+  for (const d of dets)
+    if (d.cls===0 && (!frame||d.score>frame.score)) frame=d;
+  if (!frame) return;
+  // 模糊/运动帧：frame 置信度低，锚点也不准，跳过更新保留上一帧结果
+  if (frame.score < 0.75) return;
+
+  const [fx1,fy1,fx2,fy2]=frame.box;
+  // 锚点中心必须严格在 frame 内部（不放松容差）
+  const normals=[], brs=[];
+  for (const d of dets) {
+    if (d.cls!==2&&d.cls!==3) continue;
+    const cx=(d.box[0]+d.box[2])/2, cy=(d.box[1]+d.box[3])/2;
+    if (cx<fx1||cx>fx2||cy<fy1||cy>fy2) continue;
+    if (d.cls===3) brs.push(d); else normals.push(d);
+  }
+  // 严格要求：必须恰好 1 个 BR + 3 个 normal anchor
+  if (brs.length < 1 || normals.length < 3) return;
+
+  // ── 角色分配：依赖 BR 锚点（cls=3）确定方向 ─────────────────
+  let tlA, trA, blA, brA;
+
+  if (brs.length >= 1) {
+    brA = {cx:(brs[0].box[0]+brs[0].box[2])/2, cy:(brs[0].box[1]+brs[0].box[3])/2, d:brs[0]};
+    // TL = normals 中离 BR 最远的（对角）
+    normals.sort((a,b) => {
+      const da = (((a.box[0]+a.box[2])/2)-brA.cx)**2 + (((a.box[1]+a.box[3])/2)-brA.cy)**2;
+      const db = (((b.box[0]+b.box[2])/2)-brA.cx)**2 + (((b.box[1]+b.box[3])/2)-brA.cy)**2;
+      return db - da;
+    });
+    tlA = {cx:(normals[0].box[0]+normals[0].box[2])/2, cy:(normals[0].box[1]+normals[0].box[3])/2, d:normals[0]};
+    const rem = normals.slice(1).map(d=>({cx:(d.box[0]+d.box[2])/2, cy:(d.box[1]+d.box[3])/2, d}));
+    if (rem.length >= 2) {
+      // 叉积：TL→BR 向量，右侧=TR，左侧=BL
+      const vx = brA.cx - tlA.cx, vy = brA.cy - tlA.cy;
+      const cross = p => vx*(p.cy-tlA.cy) - vy*(p.cx-tlA.cx);
+      trA = cross(rem[0]) < 0 ? rem[0] : rem[1];
+      blA = cross(rem[0]) < 0 ? rem[1] : rem[0];
+    } else if (rem.length === 1) {
+      // 只剩一个，叉积判断它是 TR 还是 BL
+      const vx = brA.cx - tlA.cx, vy = brA.cy - tlA.cy;
+      const cross = vx*(rem[0].cy-tlA.cy) - vy*(rem[0].cx-tlA.cx);
+      if (cross < 0) { trA = rem[0]; blA = null; }
+      else           { blA = rem[0]; trA = null; }
+    }
+  } else {
+    // 无 BR：cx+cy 排序
+    const pts = normals.map(d=>({cx:(d.box[0]+d.box[2])/2, cy:(d.box[1]+d.box[3])/2, d}));
+    pts.sort((a,b) => (a.cx+a.cy)-(b.cx+b.cy));
+    tlA = pts[0];
+    const rest = pts.slice(1);
+    rest.sort((a,b) => a.cy - b.cy);
+    trA = rest[0];
+    blA = rest[rest.length-1];
+    brA = null;
+  }
+
+  if (!tlA || !trA || !blA) return;
+
+  // ── 外角选取：每个锚点取离四锚点重心最远的 bbox 角 ───────────
+  // 四个锚点中心的重心 = 正方形中心
+  const allCx = [tlA, trA, blA, ...(brA ? [brA] : [])];
+  const gcx = allCx.reduce((s,p)=>s+p.cx,0) / allCx.length;
+  const gcy = allCx.reduce((s,p)=>s+p.cy,0) / allCx.length;
+
+  function outerCorner(a) {
+    const [x1,y1,x2,y2] = a.d.box;
+    const corners = [[x1,y1],[x2,y1],[x1,y2],[x2,y2]];
+    let best=corners[0], bestD=-1;
+    for (const c of corners) {
+      const d = (c[0]-gcx)**2 + (c[1]-gcy)**2;
+      if (d>bestD) { bestD=d; best=c; }
+    }
+    return best;
+  }
+
+  const TL = outerCorner(tlA);
+  const TR = outerCorner(trA);
+  const BL = outerCorner(blA);
+  const BR = brA
+    ? outerCorner(brA)
+    : [TR[0]+BL[0]-TL[0], TR[1]+BL[1]-TL[1]];
+
+  try {
+    const OUT = 512;
+    const src2 = cv.matFromArray(4,1,cv.CV_32FC2,[TL[0],TL[1],TR[0],TR[1],BL[0],BL[1],BR[0],BR[1]]);
+    const dst2 = cv.matFromArray(4,1,cv.CV_32FC2,[0,0,OUT,0,0,OUT,OUT,OUT]);
+    const srcM = cv.matFromImageData(snapshot);
+    const dstM = new cv.Mat();
+    const M = cv.getPerspectiveTransform(src2,dst2);
+    cv.warpPerspective(srcM, dstM, M, new cv.Size(OUT,OUT));
+    if (dskCvs.width!==OUT || dskCvs.height!==OUT) {
+      dskCvs.width=OUT; dskCvs.height=OUT;
+    }
+    cv.imshow(dskCvs, dstM);
+    srcM.delete(); dstM.delete(); M.delete(); src2.delete(); dst2.delete();
+    _lastDeskewTime = performance.now();  // 记录最后一次成功 deskew 的时间
+    dskCvs.style.opacity = '1';
+  } catch(e) { console.warn('deskew:',e); }
+}
+
+// ── deskewed 超时淡出（3秒无新结果则提示）──────────────────────
+let _lastDeskewTime = 0;
+setInterval(() => {
+  if (!scanning || !_lastDeskewTime) return;
+  const elapsed = performance.now() - _lastDeskewTime;
+  if (elapsed > 3000) {
+    dskCvs.style.opacity = '0.3';
+  }
+}, 500);
+
+// ── 下载 deskewed 图像 ─────────────────────────────────────────
+function downloadDeskewed() {
+  const url = dskCvs.toDataURL('image/png');
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'deskewed_' + Date.now() + '.png';
+  a.click();
+}
+
+function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
+</script>
+</body>
+</html>
