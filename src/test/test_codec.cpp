@@ -26,10 +26,10 @@ typedef std::vector<uint8_t> Packet;
 
 class VideoChannel {
 public:
-    VideoChannel(const double lr = 0.0, const double er = 0.00) : loss_rate_(lr), error_rate_(er), total_packet_(0), lossed_packet_(0) {}
+    VideoChannel(const double lr = 0.0, const double er = 0.00) : loss_rate_(lr), error_rate_(er), total_frame_(0), lossed_frame_(0) {}
     void trans(const Packet& data){
         auto raw = data;
-        ++total_packet_;
+        ++total_frame_;
         
         static thread_local std::mt19937 rng(
             std::chrono::high_resolution_clock::now()
@@ -39,7 +39,7 @@ public:
         std::uniform_real_distribution<double> prob(0.0, 1.0);
 
         if(prob(rng) < loss_rate_){      // 模拟丢包
-            ++lossed_packet_;
+            ++lossed_frame_;
             return;
         }
 
@@ -56,13 +56,13 @@ public:
         return packets_;
     }
 
-    int total_packet() const {return total_packet_;}
-    int lossed_packet() const {return lossed_packet_;}
+    int total_frame() const {return total_frame_;}
+    int lossed_frame() const {return lossed_frame_;}
 
 private:
     std::vector<Packet> packets_;
-    int total_packet_;
-    int lossed_packet_;
+    int total_frame_;
+    int lossed_frame_;
     double loss_rate_;
     double error_rate_;
 };
@@ -87,23 +87,40 @@ int main(){
 
     puts("Ready to send.");
 
-    VideoChannel channel(0.0, 0.05);
+    VideoChannel channel(0.0, 0.06);
 
   //  const uint32_t packet_count = encoder.packet_count_recommended();
     const uint32_t packet_count = std::max(encoder.packet_count_recommended(), 10u);
 
+    uint32_t generate_frames = (
+        packet_count + Config::FOUNTAIN_PACKETS_PER_FRAME - 1
+        ) / Config::FOUNTAIN_PACKETS_PER_FRAME;
+
+    printf("Packet Count: %u\n", packet_count);
+    printf("Video Frames: %u\n", generate_frames);
+
+    /*
     for(uint32_t i = 0; i < packet_count; ++i){
         auto packet = encoder.get_packet();
-      //  printf("packet size: %u\n", packet.size());
+        printf("packet size: %u\n", packet.size());
         channel.trans(packet);
+    }*/
+    for(uint32_t i = 0; i < generate_frames; ++i){
+        auto frame_data = encoder.get_packet();
+        if(!i){
+            printf("Frame capacity: %zu bytes\n", frame_data.size());
+        }
+        channel.trans(frame_data);
     }
 
     auto recieved = channel.recieved();
 
     Decoder decoder;
-
     int cnt = 0;
 
+    printf("Start decoding...\n");
+
+    /*
     for(auto& packet : recieved){
         bool res = decoder.process_packet(packet);
         if(res) ++cnt;
@@ -112,7 +129,18 @@ int main(){
             decoder.save_to_file(outFile);
             break;
         }
+    }*/
+    for(auto& frame_data : recieved){
+        decoder.process_packet(frame_data); 
+        ++cnt;
+        if(decoder.is_complete()){
+            puts("Decode complete!");
+            decoder.save_to_file(outFile);
+            break;
+        }
     }
+
     if(!decoder.is_complete()) puts("Decode failed.");
-    printf("sent: %d, loss: %d, decoded: %d\n", channel.total_packet(), channel.lossed_packet(), cnt); 
+    else puts("Decode success!");
+    printf("sent: %d, loss: %d, processed: %d\n", channel.total_frame(), channel.lossed_frame(), cnt); 
 }

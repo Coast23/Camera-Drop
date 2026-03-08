@@ -12,33 +12,54 @@ class Decoder {
 public:
     Decoder() : fountain_decoder_(std::make_unique<FountainDecoder>()) {}
 
-    bool process_packet(const std::vector<uint8_t>& packet_data){
+    // 处理一整帧接受到的图像数据
+    // TODO: 函数改名 process_frame_data()
+    bool process_packet(const std::vector<uint8_t>& frame_data){
         std::vector<uint8_t> decoded_data;
 
         size_t offset = 0;
-        while(offset < packet_data.size()){
-            if(offset + Config::RS_BLOCK_SIZE > packet_data.size()){
-                break;
+        
+        // 逐个提取帧内所有的 Fountain 包
+        for(uint32_t i = 0; i < Config::FOUNTAIN_PACKETS_PER_FRAME; ++i){
+            std::vector<uint8_t> decoded_payload;
+            decoded_payload.reserve(Config::FOUNTAIN_PAYLOAD_SIZE);
+            bool packet_valid = true;
+
+            for(uint32_t j = 0; j < Config::RS_BLOCKS_PER_FOUNTAIN_CHUNK; ++j){
+                if(offset + Config::RS_BLOCK_SIZE > frame_data.size()){
+                    packet_valid = false;
+                    break;
+                }
+
+                std::vector<uint8_t> rs_block(
+                    frame_data.begin() + offset,
+                    frame_data.begin() + offset + Config::RS_BLOCK_SIZE
+                );
+                offset += Config::RS_BLOCK_SIZE;
+            
+                if(packet_valid){
+                    std::vector<uint8_t> decoded = rs_decoder.decode(rs_block);
+                    if(decoded.empty()){
+                        packet_valid = false;
+                    }
+                    else{
+                        decoded_payload.insert(
+                            decoded_payload.end(),
+                            decoded.begin(),
+                            decoded.end()
+                        );
+                    }
+                }
             }
 
-            std::vector<uint8_t> rs_block(
-                packet_data.begin() + offset,
-                packet_data.begin() + offset + Config::RS_BLOCK_SIZE
-            );
-
-            std::vector<uint8_t> decoded = rs_decoder.decode(rs_block);
-
-            if(decoded.empty()) return false;  // 解包失败
-            
-            decoded_data.insert(
-                decoded_data.end(), decoded.begin(), decoded.end()
-            );
-            offset += Config::RS_BLOCK_SIZE;
+            if(packet_valid and decoded_payload.size() == Config::FOUNTAIN_PAYLOAD_SIZE){
+                DataPacket packet;
+                if(packet.deserialize(decoded_payload.data(), decoded_payload.size())){
+                    fountain_decoder_->add_block(packet);
+                }
+            }
         }
-
-        DataPacket packet;
-        if(!packet.deserialize(decoded_data.data(), decoded_data.size())) return false;  // 反序列化失败
-        return fountain_decoder_->add_block(packet);
+        return true;
     }
 
     bool is_complete() const {

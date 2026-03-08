@@ -25,8 +25,8 @@ endif()
 # OpenCV 请自备
 find_package(OpenCV REQUIRED)
 
-# add_executable(debug src/test/test_codec.cpp ${SRC_FILES})
-add_executable(debug src/test/test_img_writer.cpp ${SRC_FILES})
+add_executable(debug src/test/test_codec.cpp ${SRC_FILES})
+# add_executable(debug src/test/test_img_writer.cpp ${SRC_FILES})
 
 target_include_directories(debug PRIVATE
     src

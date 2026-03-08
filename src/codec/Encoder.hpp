@@ -42,39 +42,44 @@ public:
         return fountain_encoder_ && fountain_encoder_->is_valid();
     }
 
-    // 生成下一个传输包
+    // 生成下一个一整帧画面的数据
+    // TODO: 函数改名 get_frame_data()
     std::vector<uint8_t> get_packet(){
         if(!is_valid()) return {};
         
-        // 1. 生成 Fountain 编码块
-        DataPacket fountain_packet = fountain_encoder_->encode_block();
-        std::vector<uint8_t> fountain_data = fountain_packet.serialize();
-        
-        // 2. 对 Fountain 数据进行分块并 RS 编码
         std::vector<uint8_t> result;
         result.reserve(Config::PACKET_CAPACITY);
         RSEncoder rs_encoder;
         
-        size_t offset = 0;
-        while(offset < fountain_data.size()){
-            size_t chunk_size = std::min((size_t)Config::RS_DATA_SIZE, fountain_data.size() - offset);
-            std::vector<uint8_t> chunk(
-                fountain_data.begin() + offset,
-                fountain_data.begin() + offset + chunk_size
-            );
+        // 循环生成当前帧需要的所有喷泉包
+        for(uint32_t i = 0; i < Config::FOUNTAIN_PACKETS_PER_FRAME; ++i){
+            DataPacket fountain_packet = fountain_encoder_->encode_block();
+            std::vector<uint8_t> fountain_data = fountain_packet.serialize();
+        
+            // 对这个 Fountain 包进行 RS 分块（N个）
+            size_t offset = 0;
+            while(offset < fountain_data.size()){
+                size_t chunk_size = std::min((size_t)Config::RS_DATA_SIZE, fountain_data.size() - offset);
+                std::vector<uint8_t> chunk(
+                    fountain_data.begin() + offset,
+                    fountain_data.begin() + offset + chunk_size
+                );
 
-            // Is it necessary to pad the chunk?
-            if(chunk.size() < Config::RS_DATA_SIZE){
-                chunk.resize(Config::RS_DATA_SIZE, 0); 
+                if(chunk.size() < Config::RS_DATA_SIZE){
+                    chunk.resize(Config::RS_DATA_SIZE, 0); 
+                }
+
+                std::vector<uint8_t> encoded = rs_encoder.encode(chunk);
+                if(encoded.empty()) return {}; // TODO: Throw an exception?
+                
+                result.insert(result.end(), encoded.begin(), encoded.end());
+                offset += chunk_size;
             }
-
-            std::vector<uint8_t> encoded = rs_encoder.encode(chunk);
-            if(encoded.empty()) return {}; // TODO: Throw an exception?
-            
-            result.insert(result.end(), encoded.begin(), encoded.end());
-            offset += chunk_size;
         }
-        if(result.size() < Config::PACKET_CAPACITY) result.resize(Config::PACKET_CAPACITY, 0);
+
+        if(result.size() < Config::PACKET_CAPACITY){
+            result.resize(Config::PACKET_CAPACITY, 0);
+        }
         return result;
     }
 

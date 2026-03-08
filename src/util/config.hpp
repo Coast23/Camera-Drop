@@ -5,13 +5,13 @@
 class Config {
 public:
     // 图像基本配置
-    static const int IMG_WIDTH  = 2536;
-    static const int IMG_HEIGHT = 1456;
+    static const int IMG_WIDTH  = 1024;
+    static const int IMG_HEIGHT = 1024;
     static const int STRIDE     = 9;
     static const int MARGIN     = 8;
 
     static constexpr int GRID_R = (IMG_HEIGHT - MARGIN * 2) / STRIDE;
-    static constexpr int GRID_C = (IMG_WIDTH - MARGIN * 2) / STRIDE;
+    static constexpr int GRID_C = (IMG_WIDTH - MARGIN * 2)  / STRIDE;
 
     static const uint32_t BITS_PER_UNIT = 6;                      // 每个图案单元能编码的位数 
     static constexpr uint32_t UINTS_COUNT = GRID_R * GRID_C - 4;  // 一帧的图案单元数
@@ -31,8 +31,16 @@ public:
     static constexpr uint32_t RS_BLOCK_SIZE =       // RS 块大小
                                         RS_DATA_SIZE + RS_PARITY_SIZE;
 
-    static constexpr uint32_t FOUNTAIN_PAYLOAD_SIZE = // 有效载荷（不含 ECC）大小
-                                PACKET_CAPACITY / RS_BLOCK_SIZE * RS_DATA_SIZE;
+    static const uint32_t RS_BLOCKS_PER_FOUNTAIN_CHUNK = 8;
+
+    static constexpr uint32_t FOUNTAIN_PAYLOAD_SIZE =
+                            RS_BLOCKS_PER_FOUNTAIN_CHUNK * RS_DATA_SIZE;
+    
+    static constexpr uint32_t RS_BLOCKS_PER_FRAME = PACKET_CAPACITY / RS_BLOCK_SIZE;
+    static constexpr uint32_t FOUNTAIN_PACKETS_PER_FRAME = RS_BLOCKS_PER_FRAME / RS_BLOCKS_PER_FOUNTAIN_CHUNK;
+
+  //  static constexpr uint32_t FOUNTAIN_PAYLOAD_SIZE = // 有效载荷（不含 ECC）大小
+  //                              PACKET_CAPACITY / RS_BLOCK_SIZE * RS_DATA_SIZE;
     static const uint32_t FOUNTAIN_HEADER_SIZE = 10;  // 帧头大小 file_size(4) + original_size(4) + block_id(2)
     static const uint32_t FOUNTAIN_CRC_SIZE = 4;      // 帧尾 CRC 大小
     static constexpr uint32_t FOUNTAIN_CHUNK_SIZE =   // 块大小
