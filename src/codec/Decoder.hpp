@@ -74,7 +74,6 @@ public:
         auto decompressed = decompressor.decompress(data.data(), data.size());
         auto decompressed_data = decompressed.first;
         //  if(data.empty()) return false;
-    
         FileWriter writer(filename);
         if(!writer.is_open()) return false;
         return writer.write(decompressed_data);
