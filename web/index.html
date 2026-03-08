@@ -142,6 +142,32 @@
     padding: 3px;
     transition: opacity 0.5s;
   }
+  #decodeBar {
+    display: none;
+    flex-shrink: 0;
+    font-size: 0.66rem;
+    color: #9ca3af;
+    border-top: 1px solid #2a2a2a;
+    background: #181818;
+    padding: 5px 7px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #decodeBar.active { display: block; }
+  #cameraMeta {
+    flex-shrink: 0;
+    min-height: 108px;
+    max-height: 148px;
+    overflow: auto;
+    border-top: 1px solid #2a2a2a;
+    background: #141414;
+    color: #9ca3af;
+    font: 11px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+    padding: 6px 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
 
   /* 初始化遮罩 */
   #initOverlay {
@@ -183,6 +209,7 @@
     display: none;
   }
   #startBtn:hover { background: #1d4ed8; }
+  #startBtn:disabled { opacity: 0.55; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -191,7 +218,7 @@
   <h2>📷 Camera-Drop Scanner</h2>
   <div id="initMsg">正在加载 OpenCV.js…</div>
   <div class="prog-wrap"><div id="progBar"></div></div>
-  <button id="startBtn" onclick="onStart()">开始扫描</button>
+  <button id="startBtn" onclick="onStart()" disabled>开始扫描</button>
 </div>
 
 <header>
@@ -213,6 +240,8 @@
         <button id="dlBtn" onclick="downloadDeskewed()" style="font-size:0.6rem;padding:1px 6px;background:#333;color:#aaa;border:1px solid #555;border-radius:4px;cursor:pointer;">保存</button>
       </div>
       <canvas id="deskewedCanvas"></canvas>
+      <div id="decodeBar">等待识别…</div>
+      <pre id="cameraMeta">&#x7B49;&#x5F85;&#x76F8;&#x673A;&#x4FE1;&#x606F;&#x2026;</pre>
     </div>
   </div>
 </main>
@@ -220,640 +249,34 @@
 <input type="file" id="filePicker" accept=".onnx" style="display:none">
 
 <script src="ort.webgpu.min.js"></script>
-<script>
-if (typeof SharedArrayBuffer === 'undefined') {
-  ort.env.wasm.numThreads = 1;
-} else {
-  ort.env.wasm.numThreads = Math.min(navigator.hardwareConcurrency || 4, 4);
-}
-ort.env.wasm.wasmPaths = {
-  'ort-wasm-simd-threaded.wasm':      'ort-wasm-simd-threaded.wasm',
-  'ort-wasm-simd-threaded.jsep.wasm': 'ort-wasm-simd-threaded.jsep.wasm',
-};
-</script>
+<script src="js/ort-env-config.js"></script>
+<script src="js/app-context.js?v=20260308d"></script>
+<script src="js/app-cv.js?v=20260308c"></script>
 <script src="opencv.js"></script>
-<script>
-var _cvWaitStart = Date.now();
-(function waitCv() {
-  if (typeof cv !== 'undefined' && cv.Mat) {
-    console.log('[CV] wasm ready after', Date.now() - _cvWaitStart, 'ms');
-    setTimeout(function() {
-      if (typeof onCvReady === 'function') onCvReady();
-    }, 0);
-  } else if (Date.now() - _cvWaitStart > 60000) {
-    console.error('[CV] wasm wait timeout (60s)');
-    setTimeout(function() {
-      if (typeof onCvError === 'function') onCvError(null);
-    }, 0);
-  } else {
-    setTimeout(waitCv, 100);
-  }
-})();
-</script>
-
-<script>
-'use strict';
-
-// ── 状态 ──────────────────────────────────────────────────────────
-let cvReady          = false;
-let scanning         = false;
-let _currentEP       = 'wasm';
-let lastCorners      = null;   // 当前角点（YOLO 或 patch 跟踪更新）
-let _deskLoopRunning = false;
-
-// Worker 状态
-let _yoloWorker  = null;
-let _workerIdle  = true;
-let _yoloMs      = 0;
-let _yoloFpsArr  = [], _yoloLastT = performance.now();
-
-// Patch 跟踪
-const PATCH_SZ   = 16;    // 模板尺寸
-const PATCH_SRCH = 10;    // 每帧搜索半径（px，视频空间）
-const PATCH_SAD_MAX = 0.18; // 平均 SAD 阈值（超过则认为找不到，停止更新）
-const _SRCH_AREA = PATCH_SZ + 2 * PATCH_SRCH;
-const _srchCvs   = new OffscreenCanvas(_SRCH_AREA, _SRCH_AREA);
-const _srchCtx   = _srchCvs.getContext('2d');
-let _patches     = null;  // [{cx,cy,gray:Float32Array}×4] 或 null
-
-// aHash 码变化检测
-const AHASH_N      = 16;    // 感知哈希缩略图尺寸
-const AHASH_THRESH = 30;    // Hamming 距离阈值（>30/256 bit 认为是新码）
-const DESKEW_EXP   = 1.10;  // 预定位扩展比例（采样范围比码大 10%）
-const _ahCvs = new OffscreenCanvas(AHASH_N, AHASH_N);
-const _ahCtx = _ahCvs.getContext('2d');
-let _lastAHash        = null;  // 上次 aHash（BigInt）
-let _preciseQueue     = null;  // {worker: ImageBitmap, render: ImageBitmap}，码变化时立即捕获
-let _pendingRender    = null;  // 已发给 Worker 的那帧对应的 render 副本，等精定位完成后渲染
-
-const CONF       = 0.35;
-const ANCHOR_EXP = 0.05;
-
-// ── DOM ───────────────────────────────────────────────────────────
-const video    = document.getElementById('video');
-const overlay  = document.getElementById('overlay');
-const dskCvs   = document.getElementById('deskewedCanvas');
-const scanHint = document.getElementById('scanHint');
-const hintText = document.getElementById('hintText');
-const statusBar= document.getElementById('statusBar');
-const perfBar  = document.getElementById('perfBar');
-const loadBtn  = document.getElementById('loadBtn');
-const initOver = document.getElementById('initOverlay');
-const initMsg  = document.getElementById('initMsg');
-const progBar  = document.getElementById('progBar');
-const startBtn = document.getElementById('startBtn');
-
-function setMsg(m) { initMsg.textContent = m; }
-function setProg(v) { progBar.style.width = (v*100)+'%'; }
-function setStatus(m) { statusBar.textContent = m; }
-
-// ── OpenCV 回调（由 Module.onRuntimeInitialized 调用）────────────
-function onCvReady() {
-  cvReady = true;
-  console.log('[CV] ready');
-  setMsg('OpenCV 已就绪');
-  setProg(0.5);
-  startBtn.style.display = 'block';
-  setStatus('OpenCV 就绪');
-  // deskew 已改为 WebGL，不再依赖 cvReady
-}
-
-function onCvError(event) {
-  const src = event && event.target ? event.target.src : 'opencv.js';
-  console.error('[CV] load error:', src);
-  setMsg('❌ OpenCV 加载失败: ' + src);
-  startBtn.textContent = '跳过 OpenCV，仅检测';
-  startBtn.style.display = 'block';
-  startBtn.style.background = '#b45309';
-}
-
-// ── 超时保底（30s）───────────────────────────────────────────────
-setTimeout(() => {
-  if (!cvReady) {
-    console.warn('[CV] timeout after 30s');
-    setMsg('⚠ OpenCV 加载超时，可跳过');
-    startBtn.textContent = '跳过 OpenCV，仅检测';
-    startBtn.style.display = 'block';
-    startBtn.style.background = '#b45309';
-  }
-}, 30000);
-
-// ── 初始界面"开始"按钮 ─────────────────────────────────────────
-async function onStart() {
-  startBtn.disabled = true;
-  setMsg('正在请求摄像头…');
-  const ok = await startCamera();
-  if (!ok) { startBtn.disabled = false; return; }
-  setMsg('摄像头就绪');
-  setProg(0.8);
-
-  // 加载动态FP32模型
-  const MODEL_CANDIDATES = ['model/best_dynamic.onnx', 'model/combined.onnx'];
-  let modelLoaded = false;
-  for (const modelPath of MODEL_CANDIDATES) {
-    try {
-      setMsg(`正在加载 ${modelPath.split('/').pop()} …`);
-      const resp = await fetch(modelPath);
-      if (!resp.ok) continue;
-      const buf = await resp.arrayBuffer();
-      setProg(0.9);
-      setMsg('正在编译 WebAssembly…');
-      await _initWorker(buf);
-      setProg(1.0);
-      setMsg('完成');
-      await sleep(300);
-      initOver.classList.add('hidden');
-      onModelLoaded(modelPath.split('/').pop());
-      modelLoaded = true;
-      break;
-    } catch(e) {
-      console.warn(`Failed to load ${modelPath}:`, e);
-    }
-  }
-  if (!modelLoaded) {
-    setMsg('未找到默认模型，请点右上角"加载模型"手动选择 .onnx 文件');
-    setProg(1.0);
-    await sleep(800);
-    initOver.classList.add('hidden');
-    setStatus('请加载 .onnx 模型');
-  }
-}
-
-// ── 摄像头 ────────────────────────────────────────────────────────
-async function startCamera() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal:'environment' }, width: { ideal: 9999 }, height: { ideal: 9999 } },
-      audio: false,
-    });
-    video.srcObject = stream;
-    await new Promise(r => { video.onloadedmetadata = r; });
-    await video.play();
-    return true;
-  } catch(e) {
-    setMsg('摄像头错误: ' + e.message);
-    setStatus('摄像头错误');
-    return false;
-  }
-}
-
-// ── 手动加载模型 ─────────────────────────────────────────────────
-function pickModel() {
-  document.getElementById('filePicker').click();
-}
-document.getElementById('filePicker').onchange = async (e) => {
-  const f = e.target.files[0]; if (!f) return;
-  loadBtn.textContent = '加载中…'; loadBtn.classList.add('loading');
-  try {
-    const buf = await f.arrayBuffer();
-    await _initWorker(buf);
-    onModelLoaded(f.name);
-  } catch(err) {
-    setStatus('模型加载失败: ' + err.message);
-    loadBtn.textContent = '加载模型'; loadBtn.classList.remove('loading');
-  }
-  e.target.value = '';
-};
-
-// ── YOLO Web Worker 源码（Blob URL，WebGPU→WASM 降级，单动态 session）──
-const _BASE = new URL('.', location.href).href;
-const _WORKER_SRC = `'use strict';
-importScripts('${_BASE}ort.webgpu.min.js');
-ort.env.wasm.numThreads = 1;
-ort.env.wasm.wasmPaths = {
-  'ort-wasm-simd-threaded.wasm':      '${_BASE}ort-wasm-simd-threaded.wasm',
-  'ort-wasm-simd-threaded.jsep.wasm': '${_BASE}ort-wasm-simd-threaded.jsep.wasm',
-};
-const CONF=0.35,ANCHOR_EXP=0.05,FULL_SZ=640,FAST_SZ=320,FULL_EVERY=6;
-let sess=null,frameCount=0;
-const _lb={};
-function letterbox(bm,SZ){
-  const vw=bm.width,vh=bm.height,sc=Math.min(SZ/vw,SZ/vh);
-  const nw=Math.round(vw*sc),nh=Math.round(vh*sc),px=(SZ-nw)>>1,py=(SZ-nh)>>1;
-  if(!_lb[SZ]){_lb[SZ]={cvs:new OffscreenCanvas(SZ,SZ),f32:new Float32Array(3*SZ*SZ)};_lb[SZ].ctx=_lb[SZ].cvs.getContext('2d');}
-  const{cvs,ctx,f32}=_lb[SZ];
-  ctx.fillStyle='rgb(114,114,114)';ctx.fillRect(0,0,SZ,SZ);ctx.drawImage(bm,px,py,nw,nh);
-  const id=ctx.getImageData(0,0,SZ,SZ),N=SZ*SZ,d=id.data;
-  for(let i=0;i<N;i++){f32[i]=d[i*4]/255;f32[N+i]=d[i*4+1]/255;f32[2*N+i]=d[i*4+2]/255;}
-  return{f32,scale:sc,px,py};
-}
-function parseOutput(out,scale,px,py,vw,vh){
-  const od=out.data,n=out.dims[1],FEAT=out.dims[2],dets=[];
-  for(let i=0;i<n;i++){
-    const o=i*FEAT,score=od[o+4];if(score<CONF)continue;
-    const cls=od[o+5]|0;
-    const x1=Math.max(0,(od[o]-px)/scale),y1=Math.max(0,(od[o+1]-py)/scale);
-    const x2=Math.min(vw,(od[o+2]-px)/scale),y2=Math.min(vh,(od[o+3]-py)/scale);
-    if(x2>x1&&y2>y1)dets.push({box:[x1,y1,x2,y2],score,cls});
-  }
-  return dets;
-}
-function assignCorners(all,vw,vh,inv){
-  let bf=null;
-  for(const d of all)if(d.cls===0&&(!bf||d.score>bf.score))bf=d;
-  if(!bf)return null;
-  const[bx1,by1,bx2,by2]=bf.box;
-  const ex=(bx2-bx1)*ANCHOR_EXP,ey=(by2-by1)*ANCHOR_EXP,fcx=(bx1+bx2)/2,fcy=(by1+by2)/2;
-  const normals=[],brs=[];
-  for(const d of all){
-    if(d.cls!==2&&d.cls!==3)continue;
-    const ax=(d.box[0]+d.box[2])/2,ay=(d.box[1]+d.box[3])/2;
-    if(ax<bx1-ex||ax>bx2+ex||ay<by1-ey||ay>by2+ey)continue;
-    (d.cls===3?brs:normals).push({cx:ax,cy:ay,d});
-  }
-  if(normals.length!==3||brs.length!==1)return null;
-  const brA=brs[0];
-  normals.sort((a,b)=>b.d.score-a.d.score);
-  const t=normals.slice(0,3);
-  t.sort((a,b)=>((b.cx-brA.cx)**2+(b.cy-brA.cy)**2)-((a.cx-brA.cx)**2+(a.cy-brA.cy)**2));
-  const tlA=t[0],rem=t.slice(1);
-  const vx=brA.cx-tlA.cx,vy=brA.cy-tlA.cy;
-  const cf=p=>vx*(p.cy-tlA.cy)-vy*(p.cx-tlA.cx);
-  const trA=cf(rem[0])<0?rem[0]:rem[1],blA=cf(rem[0])<0?rem[1]:rem[0];
-  const bc=a=>{
-    const[b0,b1,b2,b3]=a.d.box;let best=[b0,b1],bd=-1;
-    for(const c of[[b0,b1],[b2,b1],[b0,b3],[b2,b3]]){const dd=(c[0]-fcx)**2+(c[1]-fcy)**2;if(dd>bd){bd=dd;best=c;}}
-    return[best[0]*inv,best[1]*inv];
-  };
-  return{TL:bc(tlA),TR:bc(trA),BL:bc(blA),BR:bc(brA),outSize:Math.round(Math.max(bx2-bx1,by2-by1)*inv)};
-}
-async function init(modelBuf){
-  const hasGPU=typeof navigator!=='undefined'&&!!navigator.gpu;
-  if(hasGPU){try{
-    sess=await ort.InferenceSession.create(modelBuf,{executionProviders:['webgpu'],graphOptimizationLevel:'all',preferredOutputLocation:'cpu'});
-    postMessage({type:'ready',ep:'webgpu'});return;
-  }catch(e){}}
-  sess=await ort.InferenceSession.create(modelBuf,{executionProviders:['wasm'],graphOptimizationLevel:'all'});
-  postMessage({type:'ready',ep:'wasm'});
-}
-async function inferBitmap(bm, patchOk, forceFull){
-  // patch 跟踪正常时多跑快速帧，patch 失效或主线程要求精定位时使用 640
-  const useFull = forceFull || !patchOk || (frameCount % FULL_EVERY === 0);
-  frameCount++;
-  const SZ=useFull?FULL_SZ:FAST_SZ;
-  const vw=bm.width,vh=bm.height,snapSc=Math.min(1,SZ/Math.max(vw,vh));
-  const sw=Math.round(vw*snapSc),sh=Math.round(vh*snapSc);
-  const snap=snapSc<1?await createImageBitmap(bm,{resizeWidth:sw,resizeHeight:sh,resizeQuality:'low'}):bm;
-  const c=letterbox(snap,SZ);
-  const t0=performance.now();
-  const r=await sess.run({images:new ort.Tensor('float32',c.f32,[1,3,SZ,SZ])});
-  const ms=performance.now()-t0;
-  if(snap!==bm)snap.close();bm.close();
-  const inv=1/snapSc;
-  const corners=assignCorners(parseOutput(r['output0'],c.scale,c.px,c.py,sw,sh),sw,sh,inv);
-  postMessage({type:'corners',corners,ms,sz:SZ,forceFull});
-}
-let busy=false;
-self.onmessage=async e=>{
-  if(e.data.type==='init'){await init(e.data.model);return;}
-  if(e.data.type==='frame'){
-    if(busy){e.data.bitmap.close();return;}
-    busy=true;
-    try{await inferBitmap(e.data.bitmap, e.data.patchOk, e.data.forceFull);}catch(ex){console.error('[W]',ex);}
-    busy=false;postMessage({type:'idle'});
-  }
-};`;
-
-// ── Worker 初始化（创建 Blob Worker，发送模型，返回 Promise）──────
-function _initWorker(modelBuf) {
-  return new Promise((resolve, reject) => {
-    if (_yoloWorker) { _yoloWorker.terminate(); _yoloWorker = null; }
-    const blob = new Blob([_WORKER_SRC], { type: 'text/javascript' });
-    _yoloWorker = new Worker(URL.createObjectURL(blob));
-    _yoloWorker.onmessage = _onWorkerMsg.bind(null, resolve);
-    _yoloWorker.onerror = reject;
-    _yoloWorker.postMessage({ type: 'init', model: modelBuf }, [modelBuf]);
-  });
-}
-
-function _onWorkerMsg(resolveInit, e) {
-  const { type } = e.data;
-  if (type === 'ready') {
-    _currentEP = e.data.ep;
-    console.log('[Worker] ready, EP =', e.data.ep);
-    // 之后的消息不再需要 resolveInit，换成普通处理
-    _yoloWorker.onmessage = _onWorkerMsg.bind(null, null);
-    resolveInit();
-  } else if (type === 'corners') {
-    _yoloMs = e.data.ms;
-    _yoloFpsArr.push(1000 / (performance.now() - _yoloLastT));
-    if (_yoloFpsArr.length > 10) _yoloFpsArr.shift();
-    _yoloLastT = performance.now();
-    if (e.data.corners) {
-      lastCorners = e.data.corners;
-      _initPatches(); // YOLO 刷新后重置 patch 模板
-      if (e.data.forceFull) _renderFine(); // 精定位完成，立即更新 dskCvs 显示
-    } else {
-      // YOLO 连续找不到码时清掉 patch 模板和 hash 基准，避免在错误位置漂移
-      _patches = null;
-      _lastAHash = null;
-    }
-  } else if (type === 'idle') {
-    _workerIdle = true;
-  }
-}
-
-function onModelLoaded(name) {
-  loadBtn.textContent = '✓ ' + name.replace('.onnx','');
-  loadBtn.classList.remove('loading'); loadBtn.classList.add('ready');
-  setStatus('模型就绪 [' + _currentEP + ']');
-  scanHint.classList.add('hidden');
-  if (!scanning) {
-    scanning = true;
-    _coarseGl = _initGL(_offDsk);
-    _fineGl   = _initGL(dskCvs);
-    console.log('[GL] coarse+fine contexts ready');
-    sendFrameLoop();
-    patchTrackLoop();
-    _startDeskewLoop();
-  }
-}
-
-function _startDeskewLoop() {
-  if (_deskLoopRunning) return;
-  _deskLoopRunning = true;
-  deskewLoop();
-}
-
-// ── YOLO 推理帧发送循环（rAF，Worker idle 时发下一帧）────────────
-function sendFrameLoop() {
-  if (!scanning) return;
-  requestAnimationFrame(sendFrameLoop);
-  if (!_yoloWorker || !_workerIdle || video.readyState < 2) return;
-
-  // 优先消费精定位队列：码变化时捕获的那一帧，强制 640px 精定位
-  if (_preciseQueue) {
-    const { worker, render } = _preciseQueue;
-    _preciseQueue = null;
-    // render 帧在此刻绑定，YOLO 处理期间不会被新帧覆盖
-    if (_pendingRender) _pendingRender.close();
-    _pendingRender = render;
-    _workerIdle = false;
-    _yoloWorker.postMessage({ type: 'frame', bitmap: worker, patchOk: false, forceFull: true }, [worker]);
-    return;
-  }
-
-  // 无精定位任务：正常捕获当前帧（Worker 内部按 FULL_EVERY 轮换 320/640）
-  _workerIdle = false;
-  createImageBitmap(video).then(bm => {
-    if (_yoloWorker) _yoloWorker.postMessage(
-      { type: 'frame', bitmap: bm, patchOk: !!_patches, forceFull: false },
-      [bm]
-    );
-  });
-}
-
-// ── Patch 跟踪：YOLO 更新后初始化模板，每帧 SAD 搜索更新角点 ────
-function _initPatches() {
-  if (!lastCorners || video.readyState < 2) return;
-  const W = video.videoWidth, H = video.videoHeight;
-  const pts = [lastCorners.TL, lastCorners.TR, lastCorners.BL, lastCorners.BR];
-  _patches = pts.map(([cx, cy]) => {
-    const x0 = Math.round(cx - PATCH_SZ / 2), y0 = Math.round(cy - PATCH_SZ / 2);
-    const pc = new OffscreenCanvas(PATCH_SZ, PATCH_SZ);
-    pc.getContext('2d').drawImage(video, x0, y0, PATCH_SZ, PATCH_SZ, 0, 0, PATCH_SZ, PATCH_SZ);
-    const id = pc.getContext('2d').getImageData(0, 0, PATCH_SZ, PATCH_SZ);
-    const gray = new Float32Array(PATCH_SZ * PATCH_SZ);
-    for (let i = 0; i < gray.length; i++)
-      gray[i] = (id.data[i*4] + id.data[i*4+1] + id.data[i*4+2]) / 765;
-    return { cx, cy, gray };
-  });
-}
-
-function _trackPatches() {
-  if (!_patches || video.readyState < 2) return null;
-  const newPts = [];
-  for (const p of _patches) {
-    const x0 = Math.round(p.cx - PATCH_SZ / 2 - PATCH_SRCH);
-    const y0 = Math.round(p.cy - PATCH_SZ / 2 - PATCH_SRCH);
-    _srchCtx.drawImage(video, x0, y0, _SRCH_AREA, _SRCH_AREA, 0, 0, _SRCH_AREA, _SRCH_AREA);
-    const id = _srchCtx.getImageData(0, 0, _SRCH_AREA, _SRCH_AREA);
-    let bestSAD = Infinity, bdx = 0, bdy = 0;
-    for (let dy = -PATCH_SRCH; dy <= PATCH_SRCH; dy++) {
-      for (let dx = -PATCH_SRCH; dx <= PATCH_SRCH; dx++) {
-        let sad = 0;
-        const oy = PATCH_SRCH + dy, ox = PATCH_SRCH + dx;
-        for (let py = 0; py < PATCH_SZ; py++) {
-          for (let px = 0; px < PATCH_SZ; px++) {
-            const si = ((oy + py) * _SRCH_AREA + (ox + px)) * 4;
-            const g = (id.data[si] + id.data[si+1] + id.data[si+2]) / 765;
-            sad += Math.abs(g - p.gray[py * PATCH_SZ + px]);
-          }
-        }
-        if (sad < bestSAD) { bestSAD = sad; bdx = dx; bdy = dy; }
-      }
-    }
-    // SAD 太大说明模板失配（码已换帧），停止此轮跟踪
-    if (bestSAD / (PATCH_SZ * PATCH_SZ) > PATCH_SAD_MAX) return null;
-    p.cx += bdx; p.cy += bdy;
-    newPts.push([p.cx, p.cy]);
-  }
-  return newPts;
-}
-
-function patchTrackLoop() {
-  if (!scanning) return;
-  requestAnimationFrame(patchTrackLoop);
-  if (!_patches || !lastCorners) return;
-  const pts = _trackPatches();
-  if (!pts) return;
-  const [TL, TR, BL, BR] = pts;
-  lastCorners = { TL, TR, BL, BR, outSize: lastCorners.outSize };
-}
-
-// ── WebGL 透视矫正（GPU，双 context：粗定位→OffscreenCanvas / 精定位→dskCvs）──
-const _offDsk = new OffscreenCanvas(1, 1);
-let _coarseGl = null;  // GL ctx for _offDsk（粗定位扩展10%，专用于 aHash）
-let _fineGl   = null;  // GL ctx for dskCvs（精定位精确显示）
-
-// WebGL context 工厂：接受任意 canvas/OffscreenCanvas，返回 {gl,tex,hLoc,outSzLoc,srcSzLoc}
-function _initGL(canvas) {
-  const gl = canvas.getContext('webgl',
-    { antialias: false, preserveDrawingBuffer: true });
-  if (!gl) { console.warn('[GL] WebGL unavailable'); return null; }
-
-  const vs = `attribute vec2 a; void main(){gl_Position=vec4(a,0,1);}`;
-  const fs = `
-    precision mediump float;
-    uniform sampler2D u_tex;
-    uniform mat3 u_H;
-    uniform vec2 u_out, u_src;
-    void main() {
-      vec2 ic = vec2(gl_FragCoord.x, u_out.y - gl_FragCoord.y);
-      vec3 p = u_H * vec3(ic, 1.0);
-      vec2 uv = (p.xy / p.z) / u_src;
-      if (uv.x<0.||uv.x>1.||uv.y<0.||uv.y>1.)
-        { gl_FragColor=vec4(0.15,0.15,0.15,1.); return; }
-      gl_FragColor = texture2D(u_tex, uv);
-    }`;
-
-  function mkShader(type, src) {
-    const s = gl.createShader(type);
-    gl.shaderSource(s, src); gl.compileShader(s); return s;
-  }
-  const prog = gl.createProgram();
-  gl.attachShader(prog, mkShader(gl.VERTEX_SHADER, vs));
-  gl.attachShader(prog, mkShader(gl.FRAGMENT_SHADER, fs));
-  gl.linkProgram(prog); gl.useProgram(prog);
-
-  const buf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  gl.bufferData(gl.ARRAY_BUFFER,
-    new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-  const aLoc = gl.getAttribLocation(prog, 'a');
-  gl.enableVertexAttribArray(aLoc);
-  gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
-
-  const tex = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.uniform1i(gl.getUniformLocation(prog, 'u_tex'), 0);
-
-  return { gl, tex,
-    hLoc:    gl.getUniformLocation(prog, 'u_H'),
-    outSzLoc: gl.getUniformLocation(prog, 'u_out'),
-    srcSzLoc: gl.getUniformLocation(prog, 'u_src') };
-}
-
-// 通用渲染：将 imgSrc（video 或 ImageBitmap）透视矫正到 targetCvs，角点可选向外扩展 expand 倍
-function _renderDeskew(ctx, targetCvs, corners, expand, imgSrc) {
-  if (!ctx || !corners) return;
-  imgSrc = imgSrc || video;
-  if (!imgSrc || (imgSrc === video && video.readyState < 2)) return;
-  const { TL, TR, BL, BR, outSize } = corners;
-  const EXP = expand || 1;
-  const cx = (TL[0]+TR[0]+BL[0]+BR[0])/4, cy = (TL[1]+TR[1]+BL[1]+BR[1])/4;
-  const ex = ([px,py]) => [cx+(px-cx)*EXP, cy+(py-cy)*EXP];
-  const [eTL,eTR,eBL,eBR] = [TL,TR,BL,BR].map(ex);
-  const OUT = Math.round(outSize * EXP);
-  const sw = imgSrc.videoWidth || imgSrc.width;
-  const sh = imgSrc.videoHeight || imgSrc.height;
-  const { gl, tex, hLoc, outSzLoc, srcSzLoc } = ctx;
-  if (targetCvs.width !== OUT || targetCvs.height !== OUT) {
-    targetCvs.width = targetCvs.height = OUT;
-    gl.viewport(0, 0, OUT, OUT);
-  }
-  const H = _computeH([[0,0],[OUT,0],[0,OUT],[OUT,OUT]], [eTL,eTR,eBL,eBR]);
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, imgSrc);
-  gl.uniformMatrix3fv(hLoc, false, H);
-  gl.uniform2f(outSzLoc, OUT, OUT);
-  gl.uniform2f(srcSzLoc, sw, sh);
-  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-}
-
-// 精定位完成时调用：用与精定位帧同一时刻的 render 副本渲染 dskCvs（帧和角点完全匹配）
-function _renderFine() {
-  if (!_pendingRender) return;
-  _renderDeskew(_fineGl, dskCvs, lastCorners, 1.0, _pendingRender);
-  _pendingRender.close();
-  _pendingRender = null;
-  _lastDeskewTime = performance.now();
-  dskCvs.style.opacity = '1';
-}
-
-// 4点单应矩阵（DLT + 高斯消元），返回列主序 Float32Array 供 uniformMatrix3fv
-function _computeH(srcPts, dstPts) {
-  const A = new Float64Array(64), b = new Float64Array(8);
-  for (let i = 0; i < 4; i++) {
-    const [x,y]=[srcPts[i][0],srcPts[i][1]], [u,v]=[dstPts[i][0],dstPts[i][1]], r=i*2;
-    A.set([x,y,1,0,0,0,-u*x,-u*y], r*8);
-    A.set([0,0,0,x,y,1,-v*x,-v*y], (r+1)*8);
-    b[r]=u; b[r+1]=v;
-  }
-  const n=8, M=new Float64Array(n*(n+1));
-  for (let i=0;i<n;i++){for(let j=0;j<n;j++)M[i*(n+1)+j]=A[i*n+j];M[i*(n+1)+n]=b[i];}
-  for (let c=0;c<n;c++){
-    let p=c;
-    for(let r=c+1;r<n;r++)if(Math.abs(M[r*(n+1)+c])>Math.abs(M[p*(n+1)+c]))p=r;
-    for(let j=0;j<=n;j++){const t=M[c*(n+1)+j];M[c*(n+1)+j]=M[p*(n+1)+j];M[p*(n+1)+j]=t;}
-    for(let r=c+1;r<n;r++){const f=M[r*(n+1)+c]/M[c*(n+1)+c];for(let j=c;j<=n;j++)M[r*(n+1)+j]-=f*M[c*(n+1)+j];}
-  }
-  const h=new Float64Array(n);
-  for(let i=n-1;i>=0;i--){h[i]=M[i*(n+1)+n];for(let j=i+1;j<n;j++)h[i]-=M[i*(n+1)+j]*h[j];h[i]/=M[i*(n+1)+i];}
-  // 行主序 → 列主序（WebGL uniformMatrix3fv 期望列主序）
-  return new Float32Array([h[0],h[3],h[6], h[1],h[4],h[7], h[2],h[5],1]);
-}
-
-// ── aHash：感知哈希（16×16 灰度，256 bit BigInt），从粗定位 OffscreenCanvas 读取
-function _computeAHash() {
-  const N = AHASH_N, W = _offDsk.width;
-  // 取中心 84%（跳过扩展出来的背景边距，约各 8%）
-  const m = Math.round(W * 0.08), inner = W - 2 * m;
-  _ahCtx.drawImage(_offDsk, m, m, inner, inner, 0, 0, N, N);
-  const d = _ahCtx.getImageData(0, 0, N, N).data;
-  const gray = new Uint8Array(N * N);
-  let sum = 0;
-  for (let i = 0; i < N * N; i++) {
-    gray[i] = (d[i*4] * 77 + d[i*4+1] * 150 + d[i*4+2] * 29) >> 8;
-    sum += gray[i];
-  }
-  const avg = sum / (N * N);
-  let hash = 0n;
-  for (let i = 0; i < N * N; i++)
-    if (gray[i] >= avg) hash |= (1n << BigInt(i));
-  return hash;
-}
-
-function _hammingDist(a, b) {
-  let d = a ^ b, c = 0;
-  while (d) { c += Number(d & 1n); d >>= 1n; }
-  return c;
-}
-
-// ── 矫正循环（rAF 速度，独立于 YOLO）────────────────────────────
-let _dskFpsArr = [], _dskLastT = performance.now(), _dskFps = 0;
-
-function deskewLoop() {
-  if (!scanning) return;
-  requestAnimationFrame(deskewLoop);
-  if (!_coarseGl || !lastCorners || video.readyState < 2) return;
-
-  // 粗定位渲染（扩展10%）到后台 OffscreenCanvas，专用于 aHash 检测
-  _renderDeskew(_coarseGl, _offDsk, lastCorners, DESKEW_EXP);
-
-  // aHash 检测：比较当前帧与上帧的码内容，变化则立即捕获当前视频帧入精定位队列
-  const newHash = _computeAHash();
-  if (_lastAHash === null || _hammingDist(newHash, _lastAHash) > AHASH_THRESH) {
-    _lastAHash = newHash;
-    // 同时捕获两份（同一时刻）：worker 发给 YOLO，render 等精定位完成后渲染 dskCvs
-    Promise.all([createImageBitmap(video), createImageBitmap(video)]).then(([worker, render]) => {
-      if (_preciseQueue) { _preciseQueue.worker.close(); _preciseQueue.render.close(); }
-      _preciseQueue = { worker, render };
-    });
-  }
-
-  // 统计矫正帧率 + 刷新 perfBar
-  const now = performance.now();
-  _dskFpsArr.push(1000/(now-_dskLastT));
-  if (_dskFpsArr.length>12) _dskFpsArr.shift();
-  _dskLastT = now;
-  _dskFps = _dskFpsArr.reduce((a,b)=>a+b,0)/_dskFpsArr.length;
-  const yf = _yoloFpsArr.length
-    ? (_yoloFpsArr.reduce((a,b)=>a+b,0)/_yoloFpsArr.length).toFixed(1) : '—';
-  perfBar.textContent = `检测 ${_dskFps.toFixed(1)}fps  YOLO ${yf}fps ${_yoloMs.toFixed(0)}ms [${_currentEP}]`;
-}
-
-// ── deskewed 超时淡出（3秒无新 YOLO 定位则提示）─────────────────
-let _lastDeskewTime = 0;
-setInterval(() => {
-  if (!scanning || !_lastDeskewTime) return;
-  if (performance.now() - _lastDeskewTime > 3000) dskCvs.style.opacity = '0.3';
-}, 500);
-
-// ── 下载 deskewed 图像 ─────────────────────────────────────────
-function downloadDeskewed() {
-  const url = dskCvs.toDataURL('image/png');
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'deskewed_' + Date.now() + '.png';
-  a.click();
-}
-
-function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
-</script>
+<script src="js/cv-wait.js"></script>
+<script src="js/app-camera.js?v=20260308d"></script>
+<script src="js/app-worker.js?v=20260308c"></script>
+<script src="js/app-localizer-cv.js?v=20260306w"></script>
+<script src="js/app-patch.js?v=20260307a"></script>
+<script src="js/app-deskew.js?v=20260308c"></script>
+<script src="js/app-recognizer.js?v=20260307d"></script>
+<script src="js/app-model.js?v=20260308d"></script>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

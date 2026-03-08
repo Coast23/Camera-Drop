@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Camera-Drop Bench Player</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #0a0a0a;
+    color: #e5e7eb;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    min-height: 100vh;
+  }
+  header {
+    padding: 10px 12px;
+    border-bottom: 1px solid #222;
+    background: #111;
+  }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: end;
+  }
+  .ctrl {
+    display: grid;
+    gap: 4px;
+    font-size: 12px;
+    color: #9ca3af;
+  }
+  input, select, button {
+    background: #1f2937;
+    color: #f3f4f6;
+    border: 1px solid #374151;
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 14px;
+  }
+  input[type="range"] { width: 160px; }
+  button { cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  main {
+    display: grid;
+    place-items: center;
+    padding: 10px;
+  }
+  #playCanvas {
+    width: min(94vw, 92vh);
+    height: min(94vw, 92vh);
+    background: #000;
+    image-rendering: pixelated;
+    border: 1px solid #2b2b2b;
+    border-radius: 8px;
+  }
+  footer {
+    border-top: 1px solid #222;
+    background: #0f0f0f;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: #9ca3af;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+  }
+  .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+</style>
+</head>
+<body>
+<header>
+  <div class="controls">
+    <label class="ctrl">Seed
+      <input id="seedInput" type="number" value="114514" min="1" step="1">
+    </label>
+    <label class="ctrl">Frames
+      <input id="frameCountInput" type="number" value="600" min="1" step="1">
+    </label>
+    <label class="ctrl">FPS
+      <input id="fpsRange" type="range" value="12" min="1" max="60" step="1">
+    </label>
+    <label class="ctrl">FPS(数值)
+      <input id="fpsInput" type="number" value="12" min="1" max="60" step="1">
+    </label>
+    <label class="ctrl">Pattern Dict
+      <select id="dictMode">
+        <option value="best_v2">./best_v2</option>
+        <option value="best">./best</option>
+        <option value="builtin">builtin-gen</option>
+      </select>
+    </label>
+    <label class="ctrl">Dict 已加载
+      <input id="dictStatus" type="text" value="builtin-gen" readonly>
+    </label>
+    <button id="startBtn">开始播放</button>
+    <button id="stopBtn">停止</button>
+    <button id="stepBtn">下一帧</button>
+    <button id="fsBtn">全屏</button>
+  </div>
+</header>
+
+<main>
+  <canvas id="playCanvas" width="1024" height="1024"></canvas>
+</main>
+
+<footer>
+  <span>Seq: <b id="statSeq" class="mono">1</b></span>
+  <span>实际播放 FPS: <b id="statPlayFps" class="mono">0.00</b></span>
+  <span>识别页参数链接: <b id="shareText" class="mono"></b></span>
+</footer>
+
+<script src="js/bench-codebook.js?v=20260306g"></script>
+<script src="js/bench-player-page.js?v=20260307a"></script>
+</body>
+</html>
+
