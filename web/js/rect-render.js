@@ -120,7 +120,7 @@
       let mask = 0n;
       for (let i = 0; i < TILE_SIZE * TILE_SIZE; i++) {
         const gray = (data[i * 4] * 77 + data[i * 4 + 1] * 150 + data[i * 4 + 2] * 29) >> 8;
-        if (gray >= 128) {
+        if (gray < 128) {
           mask |= (1n << BigInt(i));
         }
       }
