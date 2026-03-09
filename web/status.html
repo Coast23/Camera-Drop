@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Camera-Drop Camera Status</title>
+<style>
+  :root {
+    --bg: #0a1218;
+    --bg2: #12202a;
+    --panel: rgba(10, 18, 24, 0.86);
+    --panel-strong: rgba(8, 13, 18, 0.94);
+    --ink: #eef8f7;
+    --muted: #96b0ac;
+    --line: rgba(142, 194, 186, 0.18);
+    --accent: #8bf0c6;
+    --accent-2: #79b8ff;
+    --good: #7ef29a;
+    --bad: #ff8b8b;
+    --warn: #ffd27d;
+    --shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+  }
+  * { box-sizing: border-box; }
+  html, body { min-height: 100%; }
+  body {
+    margin: 0;
+    color: var(--ink);
+    font: 14px/1.5 "IBM Plex Mono", "JetBrains Mono", Consolas, monospace;
+    background:
+      radial-gradient(circle at 12% 18%, rgba(139, 240, 198, 0.12), transparent 28%),
+      radial-gradient(circle at 88% 14%, rgba(121, 184, 255, 0.14), transparent 26%),
+      linear-gradient(160deg, var(--bg2), var(--bg));
+  }
+  .shell {
+    width: min(1480px, calc(100vw - 28px));
+    margin: 18px auto 30px;
+    display: grid;
+    grid-template-columns: 360px minmax(0, 1fr);
+    gap: 16px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 24px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(16px);
+  }
+  .side {
+    position: sticky;
+    top: 16px;
+    align-self: start;
+    padding: 18px;
+  }
+  .hero {
+    padding: 18px;
+    border-radius: 18px;
+    border: 1px solid rgba(139, 240, 198, 0.16);
+    background: linear-gradient(145deg, rgba(139, 240, 198, 0.12), rgba(121, 184, 255, 0.08));
+    margin-bottom: 16px;
+  }
+  h1, h2, h3 {
+    margin: 0;
+    font-weight: 700;
+  }
+  h1 { font-size: 22px; }
+  h2 { font-size: 16px; }
+  h3 { font-size: 13px; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+  .sub {
+    margin-top: 8px;
+    color: var(--muted);
+  }
+  .row, .stack {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .stack { flex-direction: column; }
+  button, a.linkbtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 42px;
+    padding: 10px 14px;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #04110c;
+    font: inherit;
+    font-weight: 700;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  button.secondary, a.linkbtn.secondary {
+    background: rgba(7, 12, 16, 0.92);
+    color: var(--ink);
+    border-color: rgba(142, 194, 186, 0.18);
+  }
+  button:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+  }
+  .meta {
+    margin-top: 16px;
+    display: grid;
+    grid-template-columns: 116px minmax(0, 1fr);
+    gap: 8px 12px;
+  }
+  .meta div:nth-child(odd) { color: var(--muted); }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 14px;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 30px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(142, 194, 186, 0.16);
+    background: rgba(7, 12, 16, 0.82);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .chip.good { color: var(--good); border-color: rgba(126, 242, 154, 0.22); }
+  .chip.bad { color: var(--bad); border-color: rgba(255, 139, 139, 0.22); }
+  .chip.warn { color: var(--warn); border-color: rgba(255, 210, 125, 0.22); }
+  .main {
+    display: grid;
+    gap: 14px;
+    min-width: 0;
+  }
+  .bar {
+    padding: 14px 16px;
+    border-radius: 18px;
+    background: var(--panel-strong);
+    border: 1px solid rgba(142, 194, 186, 0.14);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .status {
+    color: var(--accent);
+    font-weight: 700;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(360px, 0.9fr);
+    gap: 14px;
+  }
+  .card {
+    padding: 16px;
+    border-radius: 20px;
+    background: rgba(8, 13, 18, 0.9);
+    border: 1px solid rgba(142, 194, 186, 0.14);
+    min-width: 0;
+  }
+  .videoWrap {
+    position: relative;
+    overflow: hidden;
+    border-radius: 18px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,0.03), transparent),
+      radial-gradient(circle at center, rgba(139, 240, 198, 0.08), transparent 60%),
+      #03080b;
+    aspect-ratio: 9 / 16;
+    border: 1px solid rgba(142, 194, 186, 0.14);
+  }
+  video {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+    background: #000;
+  }
+  .overlay {
+    position: absolute;
+    left: 50%;
+    bottom: 10px;
+    transform: translateX(-50%);
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.54);
+    color: rgba(255,255,255,0.88);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th, td {
+    padding: 9px 10px;
+    border-bottom: 1px solid rgba(142, 194, 186, 0.1);
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    color: var(--muted);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .state-good { color: var(--good); }
+  .state-bad { color: var(--bad); }
+  .state-warn { color: var(--warn); }
+  pre {
+    margin: 0;
+    padding: 14px;
+    border-radius: 16px;
+    border: 1px solid rgba(142, 194, 186, 0.12);
+    background: rgba(4, 7, 10, 0.82);
+    color: #bfd4d0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-height: 180px;
+    max-height: 320px;
+    overflow: auto;
+  }
+  .two {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+  @media (max-width: 1100px) {
+    .shell { grid-template-columns: 1fr; }
+    .side { position: static; }
+    .grid { grid-template-columns: 1fr; }
+    .two { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <section class="panel side">
+      <div class="hero">
+        <h1>Camera Status</h1>
+        <div class="sub">在真正扫码前，先检查浏览器是否支持我们当前链路用到的相机 API、参数控制和首帧回调。</div>
+      </div>
+
+      <div class="stack">
+        <button id="refreshBtn">刷新能力</button>
+        <button id="startBtn">请求摄像头并测试</button>
+        <button id="tuneBtn" class="secondary" disabled>应用一步到位参数</button>
+        <button id="snapshotBtn" class="secondary" disabled>刷新当前快照</button>
+        <button id="stopBtn" class="secondary" disabled>停止摄像头</button>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <a class="linkbtn secondary" href="./index.html">返回首页</a>
+        <a class="linkbtn secondary" href="./deskew-test.html">Deskew Test</a>
+      </div>
+
+      <div class="meta">
+        <div>状态</div><div id="statusText">等待测试</div>
+        <div>设备</div><div id="deviceText">-</div>
+        <div>首帧</div><div id="frameText">-</div>
+        <div>帧回调</div><div id="rvfcText">-</div>
+        <div>场景亮度</div><div id="sceneText">-</div>
+      </div>
+
+      <div class="chips" id="summaryChips"></div>
+    </section>
+
+    <section class="main">
+      <div class="bar">
+        <div>
+          <div class="status" id="topStatus">等待测试</div>
+          <div class="sub" style="margin-top:4px;">这页覆盖当前扫码链路实际依赖的相机 API，不是泛泛的浏览器媒体能力列表。</div>
+        </div>
+      </div>
+
+      <div class="grid">
+        <section class="card">
+          <h2>预览</h2>
+          <div class="sub">请求到摄像头后，这里会显示实时画面，并统计 `requestVideoFrameCallback` 或降级回调频率。</div>
+          <div class="videoWrap" style="margin-top:12px;">
+            <video id="video" autoplay playsinline muted></video>
+            <div class="overlay" id="overlayText">camera idle</div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>实际用到的 API</h2>
+          <div class="sub">支持状态来自当前浏览器环境，部分能力需要先成功打开摄像头后才能确认。</div>
+          <table style="margin-top:12px;">
+            <thead>
+              <tr><th>API</th><th>状态</th><th>用途</th></tr>
+            </thead>
+            <tbody id="apiTableBody"></tbody>
+          </table>
+        </section>
+      </div>
+
+      <div class="two">
+        <section class="card">
+          <h2>支持的约束字段</h2>
+          <div class="sub">来自 `navigator.mediaDevices.getSupportedConstraints()`，可看出浏览器是否认这些键。</div>
+          <pre id="supportedPre">-</pre>
+        </section>
+        <section class="card">
+          <h2>请求约束</h2>
+          <div class="sub">这是当前扫码链路请求相机时实际想下发的约束基础版本。</div>
+          <pre id="requestedPre">-</pre>
+        </section>
+      </div>
+
+      <div class="two">
+        <section class="card">
+          <h2>Track Capabilities</h2>
+          <pre id="capabilitiesPre">-</pre>
+        </section>
+        <section class="card">
+          <h2>Track Settings / Constraints</h2>
+          <pre id="settingsPre">-</pre>
+        </section>
+      </div>
+
+      <section class="card">
+        <h2>日志</h2>
+        <div class="sub">包括权限、首帧等待、参数锁定和失败原因。</div>
+        <pre id="logPre" style="margin-top:12px;">-</pre>
+      </section>
+    </section>
+  </div>
+
+  <script src="./js/status-page.js?v=20260309v1"></script>
+</body>
+</html>

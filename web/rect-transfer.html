@@ -1,0 +1,145 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Camera Drop Rect Codec Demo</title>
+  <style>
+    :root {
+      --bg: #0f1013;
+      --panel: #17191f;
+      --line: #2a2e38;
+      --text: #e7ecf3;
+      --muted: #9ba6b6;
+      --accent: #5dd6a2;
+      --accent2: #79a7ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--text);
+      background: radial-gradient(circle at top, #1a1d27, var(--bg) 50%);
+    }
+    .wrap {
+      width: min(1180px, calc(100vw - 24px));
+      margin: 20px auto 40px;
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 16px;
+    }
+    .panel {
+      background: color-mix(in srgb, var(--panel) 94%, black);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: 0 18px 40px rgba(0,0,0,0.24);
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 20px;
+    }
+    .sub {
+      margin-bottom: 16px;
+      color: var(--muted);
+    }
+    label {
+      display: block;
+      margin: 12px 0 6px;
+      color: var(--muted);
+    }
+    input[type="file"], input[type="number"] {
+      width: 100%;
+      background: #101219;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    button {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #071014;
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      margin-right: 8px;
+      margin-top: 12px;
+    }
+    button.secondary {
+      background: #11141b;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 132px 1fr;
+      gap: 8px 12px;
+      margin-top: 14px;
+      align-items: start;
+    }
+    .kv div:nth-child(odd) { color: var(--muted); }
+    canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+      background: #000;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+    }
+    pre {
+      margin: 12px 0 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--muted);
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    @media (max-width: 900px) {
+      .wrap { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="panel">
+      <h1>Rect Codec Demo</h1>
+      <div class="sub">Browser-side roundtrip for the new rectangular file protocol.</div>
+      <label for="fileInput">Source file</label>
+      <input id="fileInput" type="file">
+      <label for="scaleInput">Preview scale</label>
+      <input id="scaleInput" type="number" min="1" max="4" step="1" value="1">
+      <div class="row">
+        <button id="prepareBtn">Prepare</button>
+        <button id="prevBtn" class="secondary" disabled>Prev</button>
+        <button id="nextBtn" class="secondary" disabled>Next</button>
+        <button id="verifyBtn" class="secondary" disabled>Verify roundtrip</button>
+      </div>
+      <div class="kv">
+        <div>Status</div><div id="status">idle</div>
+        <div>Layout</div><div id="layoutInfo">-</div>
+        <div>Packets</div><div id="packetInfo">-</div>
+        <div>Current frame</div><div id="frameInfo">-</div>
+        <div>Roundtrip</div><div id="verifyInfo">-</div>
+      </div>
+      <pre id="logBox"></pre>
+    </section>
+    <section class="panel">
+      <canvas id="preview"></canvas>
+    </section>
+  </div>
+  <script src="./js/rect-codec.js"></script>
+  <script src="./js/rect-render.js"></script>
+  <script src="./js/rect-transfer-page.js"></script>
+</body>
+</html>

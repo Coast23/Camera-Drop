@@ -103,21 +103,8 @@ function outerCornerFromDet(det,bm,fcx,fcy,inv){
   }
   return[best.x*inv,best.y*inv];
 }
-function assignCorners(all,vw,vh,inv){
-  let bf=null;
-  for(const d of all)if(d.cls===0&&(!bf||d.score>bf.score))bf=d;
-  if(!bf)return null;
-  const[bx1,by1,bx2,by2]=bf.box;
-  const ex=(bx2-bx1)*ANCHOR_EXP,ey=(by2-by1)*ANCHOR_EXP,fcx=(bx1+bx2)/2,fcy=(by1+by2)/2;
-  const normals=[],brs=[];
-  for(const d of all){
-    if(d.cls!==2&&d.cls!==3)continue;
-    const ax=(d.box[0]+d.box[2])/2,ay=(d.box[1]+d.box[3])/2;
-    if(ax<bx1-ex||ax>bx2+ex||ay<by1-ey||ay>by2+ey)continue;
-    (d.cls===3?brs:normals).push({cx:ax,cy:ay,d});
-  }
-  if(normals.length!==3||brs.length!==1)return null;
-  const brA=brs[0];
+function buildCornersFromAnchorDetections(normals,brA,inv,frameBox){
+  if(!brA||normals.length<3)return null;
   normals.sort((a,b)=>b.d.score-a.d.score);
   const t=normals.slice(0,3);
   t.sort((a,b)=>((b.cx-brA.cx)*(b.cx-brA.cx)+(b.cy-brA.cy)*(b.cy-brA.cy))-((a.cx-brA.cx)*(a.cx-brA.cx)+(a.cy-brA.cy)*(a.cy-brA.cy)));
@@ -125,12 +112,48 @@ function assignCorners(all,vw,vh,inv){
   const vx=brA.cx-tlA.cx,vy=brA.cy-tlA.cy;
   const cf=p=>vx*(p.cy-tlA.cy)-vy*(p.cx-tlA.cx);
   const trA=cf(rem[0])<0?rem[0]:rem[1],blA=cf(rem[0])<0?rem[1]:rem[0];
+  if(!frameBox){
+    return buildCornersFromCenters([{x:tlA.cx,y:tlA.cy},{x:trA.cx,y:trA.cy},{x:blA.cx,y:blA.cy},{x:brA.cx,y:brA.cy}],inv);
+  }
+  const[bx1,by1,bx2,by2]=frameBox;
+  const fcx=(bx1+bx2)/2,fcy=(by1+by2)/2;
   const bc=a=>{
     const[b0,b1,b2,b3]=a.d.box;let best=[b0,b1],bd=-1;
     for(const c of[[b0,b1],[b2,b1],[b0,b3],[b2,b3]]){const dd=(c[0]-fcx)*(c[0]-fcx)+(c[1]-fcy)*(c[1]-fcy);if(dd>bd){bd=dd;best=c;}}
     return[best[0]*inv,best[1]*inv];
   };
   return{TL:bc(tlA),TR:bc(trA),BL:bc(blA),BR:bc(brA),outSize:Math.round(Math.max(bx2-bx1,by2-by1)*inv)};
+}
+function collectAnchorDetections(all,frameBox){
+  const normals=[],brs=[];
+  let bx1=0,by1=0,bx2=0,by2=0,ex=0,ey=0;
+  if(frameBox){
+    [bx1,by1,bx2,by2]=frameBox;
+    ex=(bx2-bx1)*ANCHOR_EXP;
+    ey=(by2-by1)*ANCHOR_EXP;
+  }
+  for(const d of all){
+    if(d.cls!==2&&d.cls!==3)continue;
+    const ax=(d.box[0]+d.box[2])/2,ay=(d.box[1]+d.box[3])/2;
+    if(frameBox&&(ax<bx1-ex||ax>bx2+ex||ay<by1-ey||ay>by2+ey))continue;
+    (d.cls===3?brs:normals).push({cx:ax,cy:ay,d});
+  }
+  return{normals,brs};
+}
+function assignCorners(all,vw,vh,inv){
+  let bf=null;
+  for(const d of all)if(d.cls===0&&(!bf||d.score>bf.score))bf=d;
+  if(bf){
+    const scoped=collectAnchorDetections(all,bf.box);
+    if(scoped.normals.length>=3&&scoped.brs.length>=1){
+      scoped.brs.sort((a,b)=>b.d.score-a.d.score);
+      return buildCornersFromAnchorDetections(scoped.normals,scoped.brs[0],inv,bf.box);
+    }
+  }
+  const globalAnchors=collectAnchorDetections(all,null);
+  if(globalAnchors.normals.length<3||globalAnchors.brs.length<1)return null;
+  globalAnchors.brs.sort((a,b)=>b.d.score-a.d.score);
+  return buildCornersFromAnchorDetections(globalAnchors.normals,globalAnchors.brs[0],inv,bf?bf.box:null);
 }
 
 function ensureScanBuffers(w,h){
@@ -799,6 +822,10 @@ self.onmessage=async e=>{
   }
 };`;
 
+  app.getYoloWorkerSource = function getYoloWorkerSource() {
+    return workerSource;
+  };
+
   app.getLocalizerMode = function getLocalizerMode() {
     let raw = null;
     if (typeof global.__CAMDROP_LOCALIZER_MODE === 'string') {
@@ -1017,6 +1044,9 @@ self.onmessage=async e=>{
           task.render = null;
           state.lastDeskewTime = performance.now();
           dom.dskCvs.style.opacity = '1';
+          if (typeof app.noteCodeSceneVisible === 'function') {
+            app.noteCodeSceneVisible('deskew-visible-direct');
+          }
           if (typeof app.enqueueRecognizeFrame === 'function') {
             app.enqueueRecognizeFrame();
           }
@@ -1024,6 +1054,9 @@ self.onmessage=async e=>{
           app.renderDeskew(state.fineGl, dom.dskCvs, state.lastCorners, 1.0, dom.video, config.FINE_RENDER_SIZE);
           state.lastDeskewTime = performance.now();
           dom.dskCvs.style.opacity = '1';
+          if (typeof app.noteCodeSceneVisible === 'function') {
+            app.noteCodeSceneVisible('deskew-visible-bootstrap');
+          }
           if (typeof app.enqueueRecognizeFrame === 'function') {
             app.enqueueRecognizeFrame();
           }
@@ -1329,6 +1362,13 @@ self.onmessage=async e=>{
     }
 
     if (typeof app.claimVideoFrame === 'function' && !app.claimVideoFrame('lastYoloVideoTime')) {
+      return;
+    }
+
+    if (typeof app.shouldSampleCameraCapture === 'function' && !app.shouldSampleCameraCapture('raw')) {
+      if (typeof app.refreshPerfBar === 'function') {
+        app.refreshPerfBar();
+      }
       return;
     }
 

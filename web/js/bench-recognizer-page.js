@@ -144,6 +144,20 @@
     return clampInt(dom.expectedFpsInput.value, 1, 120, 20);
   }
 
+  function getCaptureSamplesPerCode() {
+    const params = new URLSearchParams(location.search);
+    if (params.has('samples-per-code')) {
+      return clampInt(params.get('samples-per-code'), 1, 6, 3);
+    }
+    if (params.has('captures-per-code')) {
+      return clampInt(params.get('captures-per-code'), 1, 6, 3);
+    }
+    if (params.has('samples')) {
+      return clampInt(params.get('samples'), 1, 6, 3);
+    }
+    return 3;
+  }
+
   function getWorkerCount() {
     const params = new URLSearchParams(location.search);
     if (params.has('recog-workers')) {
@@ -314,6 +328,8 @@
     global.__CAMDROP_YOLO_QUEUE_MAX = queueLimits.yolo;
     global.__CAMDROP_PRECISE_QUEUE_MAX = queueLimits.precise;
     global.__CAMDROP_RECOG_QUEUE_MAX = queueLimits.recog;
+    global.__CAMDROP_TARGET_CODE_FPS = getExpectedFps();
+    global.__CAMDROP_CAPTURES_PER_CODE = getCaptureSamplesPerCode();
 
     const app = global.CameraDropApp;
     if (!app || !app.state) {
@@ -387,12 +403,15 @@
 
   function updateShare() {
     const q = new URLSearchParams();
+    const current = new URLSearchParams(location.search);
     const choice = getCurrentDictChoice();
     const spec = getCurrentDictSpec();
     q.set('seed', String(getSeed()));
     q.set('fps', String(getExpectedFps()));
     q.set('frames', String(getFrameCount()));
     q.set('dict', choice);
+    if (current.has('aspect')) q.set('aspect', current.get('aspect'));
+    if (current.has('short-side')) q.set('short-side', current.get('short-side'));
     if (spec.mode !== 'builtin') {
       q.set('dict-base', spec.base);
     }
@@ -545,7 +564,11 @@
     dom.frameCountInput.value = String(getFrameCount());
     updateShare();
   });
-  dom.expectedFpsInput.addEventListener('change', updateShare);
+  dom.expectedFpsInput.addEventListener('change', () => {
+    syncRuntimeConfig();
+    updateShare();
+    updateStats();
+  });
   if (dom.dictSelect) {
     dom.dictSelect.addEventListener('change', () => {
       syncRuntimeConfig();

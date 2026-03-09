@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Camera Drop File Player</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root {
+      --bg: #091312;
+      --bg2: #152228;
+      --panel: rgba(8, 17, 21, 0.86);
+      --panel-strong: rgba(6, 12, 15, 0.94);
+      --line: rgba(134, 181, 170, 0.22);
+      --text: #ecf7f4;
+      --muted: #97b4ad;
+      --accent: #7bf0b6;
+      --accent-2: #6eb7ff;
+      --shadow: 0 22px 60px rgba(0, 0, 0, 0.34);
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      color: var(--text);
+      font: 14px/1.45 "IBM Plex Mono", "JetBrains Mono", Consolas, monospace;
+      background:
+        radial-gradient(circle at 15% 20%, rgba(123, 240, 182, 0.15), transparent 34%),
+        radial-gradient(circle at 85% 12%, rgba(110, 183, 255, 0.16), transparent 28%),
+        linear-gradient(160deg, var(--bg2), var(--bg));
+    }
+    .shell {
+      width: min(1440px, calc(100vw - 28px));
+      margin: 18px auto 36px;
+      display: grid;
+      grid-template-columns: 360px minmax(0, 1fr);
+      gap: 16px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+    }
+    .left {
+      padding: 18px;
+      position: sticky;
+      top: 16px;
+      align-self: start;
+    }
+    .hero {
+      margin-bottom: 18px;
+      padding: 18px;
+      border: 1px solid rgba(123, 240, 182, 0.16);
+      border-radius: 18px;
+      background: linear-gradient(145deg, rgba(123, 240, 182, 0.12), rgba(110, 183, 255, 0.08));
+    }
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: 0.02em;
+    }
+    .sub {
+      margin-top: 8px;
+      color: var(--muted);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .field {
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      margin: 0 0 6px;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    input[type="file"], input[type="number"] {
+      width: 100%;
+      padding: 11px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(134, 181, 170, 0.2);
+      background: rgba(3, 8, 10, 0.84);
+      color: var(--text);
+      font: inherit;
+    }
+    button, .linkbtn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 42px;
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid transparent;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #04110c;
+      font: inherit;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    button.secondary, .linkbtn.secondary {
+      background: rgba(9, 16, 20, 0.92);
+      color: var(--text);
+      border-color: rgba(134, 181, 170, 0.18);
+    }
+    button:disabled {
+      opacity: 0.42;
+      cursor: not-allowed;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .meta {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr);
+      gap: 8px 12px;
+      align-items: start;
+    }
+    .meta div:nth-child(odd) {
+      color: var(--muted);
+    }
+    .progressCard {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      border: 1px solid rgba(134, 181, 170, 0.16);
+      background: rgba(3, 8, 10, 0.8);
+    }
+    .progressHead {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .progressTrack {
+      height: 12px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(123, 240, 182, 0.1);
+      border: 1px solid rgba(123, 240, 182, 0.12);
+    }
+    .progressFill {
+      width: 0%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      box-shadow: 0 0 20px rgba(110, 183, 255, 0.26);
+      transition: width 90ms linear;
+      will-change: width, transform;
+    }
+    .progressFill.indeterminate {
+      width: 26%;
+      animation: prepSlide 1s linear infinite;
+    }
+    @keyframes prepSlide {
+      from { transform: translateX(-135%); }
+      to { transform: translateX(420%); }
+    }
+    .right {
+      padding: 16px;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
+      gap: 14px;
+      min-height: calc(100vh - 52px);
+    }
+    .bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: var(--panel-strong);
+      border: 1px solid rgba(134, 181, 170, 0.16);
+    }
+    .status {
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .previewWrap {
+      position: relative;
+      min-height: 420px;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      border-radius: 22px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.03), transparent),
+        radial-gradient(circle at center, rgba(123, 240, 182, 0.08), transparent 60%),
+        #030809;
+      border: 1px solid rgba(134, 181, 170, 0.16);
+    }
+    .previewWrap::before {
+      content: "";
+      position: absolute;
+      inset: 16px;
+      border: 1px dashed rgba(123, 240, 182, 0.14);
+      border-radius: 18px;
+      pointer-events: none;
+    }
+    #playerCanvas {
+      max-width: min(100%, 1000px);
+      max-height: calc(100vh - 240px);
+      width: auto;
+      height: auto;
+      image-rendering: pixelated;
+      background: #000;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+    }
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    pre {
+      margin: 0;
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid rgba(134, 181, 170, 0.14);
+      background: rgba(3, 8, 10, 0.8);
+      color: #bdd0cb;
+      white-space: pre-wrap;
+      word-break: break-word;
+      min-height: 124px;
+      max-height: 220px;
+      overflow: auto;
+    }
+    @media (max-width: 1080px) {
+      .shell { grid-template-columns: 1fr; }
+      .left { position: static; }
+      .right { min-height: 0; }
+      #playerCanvas { max-height: 60vh; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="panel left">
+      <div class="hero">
+        <h1>Camera Drop Player</h1>
+      </div>
+
+      <div class="field">
+        <label for="fileInput">文件</label>
+        <input id="fileInput" type="file">
+      </div>
+
+      <div class="grid">
+        <div class="field">
+          <label for="widthInput">宽度</label>
+          <input id="widthInput" type="number" min="64" step="1" value="1024">
+        </div>
+        <div class="field">
+          <label for="heightInput">高度</label>
+          <input id="heightInput" type="number" min="64" step="1" value="1024">
+        </div>
+        <div class="field">
+          <label for="strideInput">Stride</label>
+          <input id="strideInput" type="number" min="9" step="1" value="9">
+        </div>
+        <div class="field">
+          <label for="marginInput">Margin</label>
+          <input id="marginInput" type="number" min="8" step="1" value="8">
+        </div>
+        <div class="field">
+          <label for="reservedInput">角保留边长</label>
+          <input id="reservedInput" type="number" min="6" step="1" value="6">
+        </div>
+        <div class="field">
+          <label for="fpsInput">播放 fps</label>
+          <input id="fpsInput" type="number" min="0.2" max="240" step="0.1" value="12">
+        </div>
+        <div class="field">
+          <label for="packetCountInput">帧数</label>
+          <input id="packetCountInput" type="number" min="0" step="1" value="0">
+        </div>
+        <div class="field">
+          <label for="renderScaleInput">渲染倍率</label>
+          <input id="renderScaleInput" type="number" min="1" max="3" step="1" value="1">
+        </div>
+      </div>
+
+      <div class="row">
+        <button id="prepareBtn">预生成帧</button>
+        <button id="playBtn" class="secondary" disabled>开始播放</button>
+        <button id="stopBtn" class="secondary" disabled>停止</button>
+      </div>
+      <div class="row">
+        <button id="fullscreenBtn" class="secondary" disabled>全屏</button>
+        <button id="copyScannerBtn" class="secondary">复制扫描页链接</button>
+        <a id="openScannerLink" class="linkbtn secondary" href="./file-scanner.html" target="_blank" rel="noopener">打开扫描页</a>
+      </div>
+
+      <div class="meta">
+        <div>状态</div><div id="statusText">初始化中</div>
+        <div>布局</div><div id="layoutInfo">-</div>
+        <div>文件</div><div id="fileInfo">-</div>
+        <div>编码</div><div id="packetInfo">-</div>
+        <div>播放</div><div id="playbackInfo">-</div>
+        <div>扫描页</div><div id="shareInfo">-</div>
+      </div>
+      <div class="progressCard">
+        <div class="progressHead">
+          <span>预生成进度</span>
+          <span id="prepareProgressText">0 / 0</span>
+        </div>
+        <div class="progressTrack">
+          <div id="prepareProgressBar" class="progressFill"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel right">
+      <div class="bar">
+        <div>
+          <div class="status" id="topStatus">等待文件</div>
+        </div>
+        <div id="frameInfo">frame - / -</div>
+      </div>
+
+      <div class="bar">
+        <div>当前 fps: <span id="liveFps">-</span></div>
+        <div>循环次数: <span id="loopInfo">0</span></div>
+        <div>画布尺寸: <span id="canvasInfo">-</span></div>
+      </div>
+
+      <div class="previewWrap">
+        <canvas id="playerCanvas"></canvas>
+      </div>
+
+      <pre id="logBox"></pre>
+    </section>
+  </div>
+
+  <script>window.__CAMDROP_ASSET_VERSION = '20260309v7';</script>
+  <script src="./js/rect-codec.js?v=20260309v7"></script>
+  <script src="./js/rect-render.js?v=20260309v7"></script>
+  <script src="./js/rect-transfer-common.js?v=20260309v7"></script>
+  <script src="./js/file-player-page.js?v=20260309v7"></script>
+</body>
+</html>

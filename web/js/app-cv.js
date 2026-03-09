@@ -6,12 +6,12 @@
   const dom = app.dom;
   const ui = app.ui;
 
-  const MSG_READY_TO_START = '\u8d44\u6e90\u5df2\u5c31\u7eea\uff0c\u70b9\u51fb\u5f00\u59cb\u626b\u63cf';
-  const MSG_CV_STATUS = 'OpenCV \u5c31\u7eea';
-  const MSG_CV_FAIL = 'OpenCV \u52a0\u8f7d\u5931\u8d25: ';
-  const MSG_CV_TIMEOUT = 'OpenCV \u52a0\u8f7d\u8d85\u65f6\uff0c\u53ef\u5148\u7ee7\u7eed';
-  const MSG_SKIP_CV = '\u8df3\u8fc7 OpenCV\uff0c\u4ec5\u68c0\u6d4b';
-  const STATUS_READY_TO_START = '\u7b49\u5f85\u5f00\u59cb\u626b\u63cf';
+  const MSG_READY_TO_START = '资源已就绪，点击开始扫描';
+  const MSG_CV_STATUS = 'OpenCV 就绪';
+  const MSG_CV_FAIL = 'OpenCV 加载失败: ';
+  const MSG_CV_TIMEOUT = 'OpenCV 加载超时，可先继续';
+  const MSG_SKIP_CV = '跳过 OpenCV，仅检测';
+  const STATUS_READY_TO_START = '等待开始扫描';
 
   function showStartButton(label, disabled, background) {
     dom.startBtn.textContent = label;
@@ -26,7 +26,7 @@
     ui.setMsg(MSG_READY_TO_START);
     ui.setProg(1.0);
     ui.setStatus(STATUS_READY_TO_START);
-    showStartButton('\u5f00\u59cb\u626b\u63cf', false, '#2563eb');
+    showStartButton('开始扫描', false, '#2563eb');
   };
 
   app.onCvError = function onCvError(event) {

@@ -194,6 +194,9 @@
     state.pendingRender = null;
     state.lastDeskewTime = performance.now();
     dom.dskCvs.style.opacity = '1';
+    if (typeof app.noteCodeSceneVisible === 'function') {
+      app.noteCodeSceneVisible('deskew-visible');
+    }
     if (typeof app.enqueueRecognizeFrame === 'function') {
       app.enqueueRecognizeFrame();
     }
@@ -219,7 +222,8 @@
       + 'fps  blur ' + state.rawBlurScore.toFixed(1) + '/' + state.coarseBlurScore.toFixed(1) + '/' + state.fineBlurScore.toFixed(1)
       + '  Loc ' + locSource + ' ' + yoloFps + 'fps ' + state.yoloMs.toFixed(0) + 'ms [' + state.currentEP + ']'
       + '  Gate vf/t/s/d/q/ok ' + state.videoFrameCount + '/' + state.coarseTrackFreshCount + '/' + state.coarseHashSameCount + '/' + state.coarseHashDiffCount + '/' + state.preciseEnqueueCount + '/' + state.forceFullDoneCount
-      + '  Drop p/y/r ' + state.preciseQueueDropCount + '/' + state.yoloQueueDropCount + '/' + state.recogQueueDropCount;
+      + '  Drop p/y/r ' + state.preciseQueueDropCount + '/' + state.yoloQueueDropCount + '/' + state.recogQueueDropCount
+      + '  Samp ' + state.captureSampleSkipCount;
   };
 
   app.computeAHashFromSource = function computeAHashFromSource(source, marginRatio) {
@@ -453,6 +457,12 @@
       }
       state.lastCoarseHandledVideoTime = state.currentFrameToken;
       state.lastCoarseGateTime = performance.now();
+      if (typeof app.shouldSampleCameraCapture === 'function' && !app.shouldSampleCameraCapture('precise')) {
+        const skippedNow = performance.now();
+        app.recordDeskewFrame(skippedNow);
+        app.refreshPerfBar();
+        return;
+      }
       const newHash = app.computeAHash();
       const hashDist = state.lastAHash === null ? (config.AHASH_THRESH + 1) : app.hammingDist(newHash, state.lastAHash);
       if (state.lastAHash !== null && hashDist <= config.AHASH_THRESH) {
@@ -514,6 +524,5 @@
 
   global.downloadDeskewed = app.downloadDeskewed;
 })(window);
-
 
 

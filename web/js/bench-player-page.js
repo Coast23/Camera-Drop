@@ -39,12 +39,15 @@
     frameCountInput: document.getElementById('frameCountInput'),
     dictMode: document.getElementById('dictMode'),
     dictStatus: document.getElementById('dictStatus'),
+    aspectInput: document.getElementById('aspectInput'),
+    shortSideInput: document.getElementById('shortSideInput'),
     startBtn: document.getElementById('startBtn'),
     stopBtn: document.getElementById('stopBtn'),
     stepBtn: document.getElementById('stepBtn'),
     fsBtn: document.getElementById('fsBtn'),
     statSeq: document.getElementById('statSeq'),
     statPlayFps: document.getElementById('statPlayFps'),
+    statCanvas: document.getElementById('statCanvas'),
     shareText: document.getElementById('shareText'),
   };
 
@@ -72,6 +75,14 @@
     return i;
   }
 
+  function clampFloat(v, lo, hi, fallback) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return fallback;
+    if (n < lo) return lo;
+    if (n > hi) return hi;
+    return n;
+  }
+
   function getSeed() {
     return clampInt(dom.seedInput.value, 1, 0x7fffffff, 114514);
   }
@@ -84,6 +95,33 @@
     return codebook.BENCH_FRAME_SET;
   }
 
+  function getCodeAspect() {
+    return clampFloat(dom.aspectInput.value, 0.25, 4.0, codebook.DEFAULT_CODE_ASPECT || 1.0);
+  }
+
+  function getShortSide() {
+    return clampInt(dom.shortSideInput.value, 240, 4096, codebook.DEFAULT_SHORT_SIDE || codebook.IMG_SIZE || 1024);
+  }
+
+  function getRenderOptions() {
+    return {
+      codeAspect: getCodeAspect(),
+      shortSide: getShortSide(),
+    };
+  }
+
+  function applyCanvasGeometry() {
+    const dims = codebook.getCanvasDimensions(getRenderOptions());
+    if (dom.canvas.width !== dims.width || dom.canvas.height !== dims.height) {
+      dom.canvas.width = dims.width;
+      dom.canvas.height = dims.height;
+      ctx.imageSmoothingEnabled = false;
+    }
+    if (dom.statCanvas) {
+      dom.statCanvas.textContent = dims.width + 'x' + dims.height + '  ar=' + getCodeAspect().toFixed(3);
+    }
+  }
+
   function updateShareLink() {
     const q = new URLSearchParams();
     const choice = getCurrentDictChoice();
@@ -92,6 +130,8 @@
     q.set('fps', String(getFps()));
     q.set('frames', String(getFrameCount()));
     q.set('dict', choice);
+    q.set('aspect', String(getCodeAspect()));
+    q.set('short-side', String(getShortSide()));
     if (spec.mode !== 'builtin') {
       q.set('dict-base', spec.base);
     }
@@ -105,6 +145,7 @@
   }
 
   function renderCurrent() {
+    applyCanvasGeometry();
     const idx = ((state.seq - 1) % getFrameCount() + getFrameCount()) % getFrameCount();
     const frame = state.frameSet[idx];
     ctx.clearRect(0, 0, dom.canvas.width, dom.canvas.height);
@@ -116,14 +157,17 @@
 
   function rebuildFrameSet() {
     const seed = getSeed();
+    const renderOptions = getRenderOptions();
+    const dims = codebook.getCanvasDimensions(renderOptions);
+    applyCanvasGeometry();
     const frames = codebook.buildFrameSet(state.dict, seed, getFrameCount());
     for (let i = 0; i < frames.length; i++) {
       const canvas = document.createElement('canvas');
-      canvas.width = codebook.IMG_SIZE;
-      canvas.height = codebook.IMG_SIZE;
+      canvas.width = dims.width;
+      canvas.height = dims.height;
       const frameCtx = canvas.getContext('2d');
       frameCtx.imageSmoothingEnabled = false;
-      codebook.drawFrame(frameCtx, state.dict, frames[i].seq, seed);
+      codebook.drawFrame(frameCtx, state.dict, frames[i].seq, seed, renderOptions);
       frames[i].canvas = canvas;
     }
     state.frameSet = frames;
@@ -198,6 +242,13 @@
     updateShareLink();
   }
 
+  function syncGeometryInputs() {
+    dom.aspectInput.value = String(getCodeAspect());
+    dom.shortSideInput.value = String(getShortSide());
+    rebuildFrameSet();
+    updateShareLink();
+  }
+
   function applyQuery() {
     const q = new URLSearchParams(location.search);
     if (q.has('seed')) dom.seedInput.value = q.get('seed');
@@ -205,10 +256,15 @@
       dom.fpsInput.value = q.get('fps');
       dom.fpsRange.value = q.get('fps');
     }
+    if (q.has('aspect')) dom.aspectInput.value = q.get('aspect');
+    if (q.has('short-side')) dom.shortSideInput.value = q.get('short-side');
     dom.dictMode.value = getInitialDictChoice();
     dom.frameCountInput.value = String(getFrameCount());
     dom.frameCountInput.readOnly = true;
     syncFpsInputs(false);
+    dom.aspectInput.value = String(getCodeAspect());
+    dom.shortSideInput.value = String(getShortSide());
+    applyCanvasGeometry();
   }
 
   dom.fpsRange.addEventListener('input', () => syncFpsInputs(true));
@@ -222,6 +278,8 @@
     dom.frameCountInput.value = String(getFrameCount());
     updateShareLink();
   });
+  dom.aspectInput.addEventListener('change', syncGeometryInputs);
+  dom.shortSideInput.addEventListener('change', syncGeometryInputs);
   dom.dictMode.addEventListener('change', loadDict);
   dom.startBtn.addEventListener('click', startPlay);
   dom.stopBtn.addEventListener('click', stopPlay);
@@ -241,4 +299,3 @@
   updateShareLink();
   loadDict();
 })(window);
-

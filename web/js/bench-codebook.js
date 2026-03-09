@@ -10,12 +10,14 @@
   const NUM_COLORS = 4;
   const P_BITS = 4;
   const BENCH_FRAME_SET = 10;
+  const DEFAULT_CODE_ASPECT = 1.0;
+  const DEFAULT_SHORT_SIDE = IMG_SIZE;
 
   const COLORS = [
-    [255, 255, 0],   // yellow
-    [0, 255, 0],     // green
-    [0, 255, 255],   // cyan
-    [255, 0, 255],   // magenta
+    [255, 255, 0],
+    [0, 255, 0],
+    [0, 255, 255],
+    [255, 0, 255],
   ];
 
   const ANCHOR_OUT_START = 2;
@@ -30,6 +32,12 @@
   const pop8 = new Uint8Array(256);
   for (let i = 1; i < 256; i++) pop8[i] = pop8[i >> 1] + (i & 1);
 
+  const canonicalCanvas = document.createElement('canvas');
+  canonicalCanvas.width = IMG_SIZE;
+  canonicalCanvas.height = IMG_SIZE;
+  const canonicalCtx = canonicalCanvas.getContext('2d');
+  canonicalCtx.imageSmoothingEnabled = false;
+
   function popcnt32(v) {
     v >>>= 0;
     return pop8[v & 255] + pop8[(v >>> 8) & 255] + pop8[(v >>> 16) & 255] + pop8[(v >>> 24) & 255];
@@ -42,6 +50,38 @@
       s ^= s >>> 17;
       s ^= s << 5;
       return (s >>> 0) / 4294967296;
+    };
+  }
+
+  function clampNumber(value, lo, hi, fallback) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    if (n < lo) return lo;
+    if (n > hi) return hi;
+    return n;
+  }
+
+  function clampInt(value, lo, hi, fallback) {
+    return Math.round(clampNumber(value, lo, hi, fallback));
+  }
+
+  function normalizeRenderOptions(options) {
+    const codeAspect = clampNumber(options && options.codeAspect, 0.25, 4.0, DEFAULT_CODE_ASPECT);
+    const shortSide = clampInt(options && (options.shortSide || options.baseShortSide), 240, 4096, DEFAULT_SHORT_SIDE);
+    return { codeAspect, shortSide };
+  }
+
+  function getCanvasDimensions(options) {
+    const render = normalizeRenderOptions(options);
+    if (render.codeAspect >= 1) {
+      return {
+        width: Math.max(1, Math.round(render.shortSide * render.codeAspect)),
+        height: render.shortSide,
+      };
+    }
+    return {
+      width: render.shortSide,
+      height: Math.max(1, Math.round(render.shortSide / render.codeAspect)),
     };
   }
 
@@ -296,7 +336,7 @@
     return out.subarray(0, writeIdx);
   }
 
-  function drawFrame(ctx, dict, seq, seed) {
+  function drawCanonicalFrame(ctx, dict, seq, seed) {
     const rand = makeRng((seed ^ Math.imul(seq, 2654435761)) >>> 0);
     const header = generateHeaderSymbols(seq, rand);
     const payload = generatePayloadSymbols(seq, seed);
@@ -319,6 +359,22 @@
     }
 
     return { headerSymbols: header, payloadSymbols: payload };
+  }
+
+  function drawFrame(ctx, dict, seq, seed, options) {
+    const render = normalizeRenderOptions(options);
+    const canvas = ctx.canvas;
+    const dims = getCanvasDimensions(render);
+    if (canvas.width !== dims.width || canvas.height !== dims.height) {
+      canvas.width = dims.width;
+      canvas.height = dims.height;
+    }
+    ctx.imageSmoothingEnabled = false;
+    drawRectRgb(ctx, 0, 0, canvas.width, canvas.height, [0, 0, 0]);
+    const rendered = drawCanonicalFrame(canonicalCtx, dict, seq, seed);
+    ctx.drawImage(canonicalCanvas, 0, 0, canvas.width, canvas.height);
+    rendered.renderOptions = render;
+    return rendered;
   }
 
   function buildFrameSet(dict, seed, frameCount) {
@@ -436,12 +492,16 @@
     NUM_COLORS,
     P_BITS,
     BENCH_FRAME_SET,
+    DEFAULT_CODE_ASPECT,
+    DEFAULT_SHORT_SIDE,
     COLORS,
     PAYLOAD_SYMBOLS: payloadCells.length,
     makeRng,
     genDict,
     loadDict,
     isPayloadCell,
+    normalizeRenderOptions,
+    getCanvasDimensions,
     drawFrame,
     buildFrameSet,
     generatePayloadSymbols,

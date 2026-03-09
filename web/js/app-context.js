@@ -28,8 +28,15 @@
     CAMERA_RECOVER_RETRY_MS: 900,
     CAMERA_WATCHDOG_MS: 1500,
     CAMERA_SETTLE_MS: 500,
+    CAMERA_CODE_SETTLE_MS: 140,
     CAMERA_WB_TARGET_K: 6500,
     CAMERA_WB_EDGE_GUARD_STEPS: 2,
+    CAMERA_TUNE_TARGET_LUMA: 118,
+    CAMERA_TUNE_TARGET_LUMA_TOLERANCE: 10,
+    CAMERA_TUNE_EXPOSURE_MIN_RATIO: 0.28,
+    CAMERA_TUNE_EXPOSURE_MAX_RATIO: 1.18,
+    CAMERA_TUNE_ISO_MIN_RATIO: 0.45,
+    CAMERA_TUNE_ISO_MAX_RATIO: 1.12,
     CAMERA_EXPOSURE_DARKEN_RATIO: 0.82,
     CAMERA_ISO_MAX: 400,
     CAMERA_EXPOSURE_COMP_TARGET: -1.3333334,
@@ -45,6 +52,8 @@
     CAMERA_TUNE_SCENE_MAX_LUMA: 242,
     CAMERA_TUNE_SCENE_MIN_RANGE: 26,
     CAMERA_TUNE_SCENE_MIN_BLUR: 4,
+    CAPTURE_TARGET_CODE_FPS: 0,
+    CAPTURES_PER_CODE: 3,
     YOLO_QUEUE_MAX: 4,
     PRECISE_QUEUE_MAX: 6,
     RECOG_QUEUE_MAX: 16,
@@ -107,6 +116,7 @@
     cameraSceneStats: null,
     cameraLastTuneAt: 0,
     cameraLastTuneCheckAt: 0,
+    cameraLastCodeRetuneAttemptAt: 0,
 
     patches: null,
 
@@ -160,6 +170,9 @@
     dskFps: 0,
     lastDeskewTime: 0,
     lastCoarseGateTime: 0,
+    lastRawCaptureAtMs: 0,
+    lastPreciseCaptureAtMs: 0,
+    captureSampleSkipCount: 0,
 
     recogLastHash: null,
     recogMs: 0,
@@ -244,6 +257,44 @@
     return true;
   };
 
+
+  app.getCaptureSamplingConfig = function getCaptureSamplingConfig() {
+    const overrideFps = Number(global.__CAMDROP_TARGET_CODE_FPS);
+    const overrideSamples = Number(global.__CAMDROP_CAPTURES_PER_CODE);
+    const targetCodeFps = Number.isFinite(overrideFps) ? overrideFps : Number(config.CAPTURE_TARGET_CODE_FPS);
+    const capturesPerCode = Number.isFinite(overrideSamples) ? overrideSamples : Number(config.CAPTURES_PER_CODE);
+    if (!(targetCodeFps > 0) || !(capturesPerCode > 0)) {
+      return {
+        enabled: false,
+        targetCodeFps: 0,
+        capturesPerCode: 0,
+        minIntervalMs: 0,
+      };
+    }
+    return {
+      enabled: true,
+      targetCodeFps,
+      capturesPerCode,
+      minIntervalMs: 1000 / (targetCodeFps * capturesPerCode),
+    };
+  };
+
+  app.shouldSampleCameraCapture = function shouldSampleCameraCapture(kind) {
+    const sampling = app.getCaptureSamplingConfig();
+    if (!sampling.enabled || !Number.isFinite(sampling.minIntervalMs) || sampling.minIntervalMs <= 0) {
+      return true;
+    }
+    const key = kind === 'raw' ? 'lastRawCaptureAtMs' : 'lastPreciseCaptureAtMs';
+    const now = performance.now();
+    const last = Number(state[key]) || 0;
+    if (last > 0 && (now - last) < sampling.minIntervalMs) {
+      state.captureSampleSkipCount++;
+      return false;
+    }
+    state[key] = now;
+    return true;
+  };
+
   app.resetPipelineCounters = function resetPipelineCounters() {
     state.videoFrameCount = 0;
     state.deskewLoopCount = 0;
@@ -260,6 +311,9 @@
     state.lastAppliedLocalizerSeq = 0;
     state.lastCoarseHandledVideoTime = null;
     state.lastCoarseGateTime = 0;
+    state.lastRawCaptureAtMs = 0;
+    state.lastPreciseCaptureAtMs = 0;
+    state.captureSampleSkipCount = 0;
     state.coarseTrackFreshCount = 0;
     state.coarseHashSameCount = 0;
     state.coarseHashDiffCount = 0;

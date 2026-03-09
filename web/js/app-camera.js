@@ -373,7 +373,22 @@
     return preferred;
   }
 
-  function pickTargetIso(caps, settings) {
+  function computeSceneExposureRatio(sceneStats) {
+    if (!sceneStats || !Number.isFinite(Number(sceneStats.mean))) {
+      return null;
+    }
+    const mean = Math.max(1, Number(sceneStats.mean));
+    const target = Math.max(24, Math.min(220, Number(config.CAMERA_TUNE_TARGET_LUMA) || 118));
+    const tolerance = Math.max(0, Number(config.CAMERA_TUNE_TARGET_LUMA_TOLERANCE) || 10);
+    if (Math.abs(mean - target) <= tolerance) {
+      return 1;
+    }
+    const minRatio = Math.max(0.1, Math.min(1, Number(config.CAMERA_TUNE_EXPOSURE_MIN_RATIO) || 0.28));
+    const maxRatio = Math.max(1, Number(config.CAMERA_TUNE_EXPOSURE_MAX_RATIO) || 1.18);
+    return clampNumeric(target / mean, minRatio, maxRatio);
+  }
+
+  function pickTargetIso(caps, settings, sceneStats) {
     if (!caps || !caps.iso) {
       return null;
     }
@@ -382,20 +397,35 @@
       ? Number(settings.iso)
       : NaN;
     const ceiling = Math.min(hi, Math.max(lo, Number(config.CAMERA_ISO_MAX) || 400));
+    const sceneRatio = computeSceneExposureRatio(sceneStats);
+    if (Number.isFinite(cur) && Number.isFinite(sceneRatio)) {
+      const minRatio = Math.max(0.1, Math.min(1, Number(config.CAMERA_TUNE_ISO_MIN_RATIO) || 0.45));
+      const maxRatio = Math.max(1, Number(config.CAMERA_TUNE_ISO_MAX_RATIO) || 1.12);
+      const isoRatio = clampNumeric(Math.sqrt(sceneRatio), minRatio, maxRatio);
+      return clampNumeric(cur * isoRatio, lo, ceiling);
+    }
     if (Number.isFinite(cur)) {
       return clampNumeric(cur, lo, ceiling);
     }
     return clampNumeric(400, lo, ceiling);
   }
 
-  function pickTargetExposureTime(caps, settings) {
+  function pickTargetExposureTime(caps, settings, sceneStats) {
     if (!caps || !caps.exposureTime) {
       return null;
     }
-    const { lo, hi } = capabilityRange(caps.exposureTime, NaN, NaN);
+    const { lo, hi, step } = capabilityRange(caps.exposureTime, NaN, NaN);
     const cur = settings && Number.isFinite(Number(settings.exposureTime))
       ? Number(settings.exposureTime)
       : NaN;
+    const sceneRatio = computeSceneExposureRatio(sceneStats);
+    if (Number.isFinite(cur) && Number.isFinite(sceneRatio)) {
+      let target = clampNumeric(cur * sceneRatio, lo, hi);
+      if (Number.isFinite(step) && step > 0 && target !== null) {
+        target = Math.round(target / step) * step;
+      }
+      return clampNumeric(target, lo, hi);
+    }
     const darkenRatio = Math.min(1, Math.max(0.4, Number(config.CAMERA_EXPOSURE_DARKEN_RATIO) || 0.82));
     if (Number.isFinite(cur)) {
       return clampNumeric(cur * darkenRatio, lo, hi);
@@ -403,7 +433,7 @@
     return clampNumeric(lo, lo, hi);
   }
 
-  function pickTargetExposureCompensation(caps, settings) {
+  function pickTargetExposureCompensation(caps, settings, sceneStats) {
     if (!caps || !caps.exposureCompensation) {
       return null;
     }
@@ -415,6 +445,14 @@
       ? Number(config.CAMERA_EXPOSURE_COMP_TARGET)
       : -1.3333334;
     let target = Math.min(cur, targetBase);
+    if (sceneStats && Number.isFinite(Number(sceneStats.mean))) {
+      const mean = Number(sceneStats.mean);
+      const targetLuma = Math.max(24, Math.min(220, Number(config.CAMERA_TUNE_TARGET_LUMA) || 118));
+      if (mean > targetLuma) {
+        const extraStops = Math.min(2.0, (mean - targetLuma) / 36);
+        target = Math.min(target, targetBase - extraStops);
+      }
+    }
     if (!Number.isFinite(target)) {
       target = targetBase;
     }
@@ -466,7 +504,7 @@
     return base;
   }
 
-  function buildLearnedTuneProfile(caps, settings) {
+  function buildLearnedTuneProfile(caps, settings, sceneStats) {
     const manual = {};
     if (caps && Array.isArray(caps.whiteBalanceMode) && caps.whiteBalanceMode.includes('manual') && caps.colorTemperature) {
       const colorTemperature = pickTargetColorTemperature(caps, settings);
@@ -476,21 +514,21 @@
       }
     }
     if (caps && Array.isArray(caps.exposureMode) && caps.exposureMode.includes('manual') && caps.exposureTime) {
-      const exposureTime = pickTargetExposureTime(caps, settings);
+      const exposureTime = pickTargetExposureTime(caps, settings, sceneStats);
       if (exposureTime !== null) {
         manual.exposureMode = 'manual';
         manual.exposureTime = exposureTime;
       }
     }
     if (caps && caps.iso) {
-      const iso = pickTargetIso(caps, settings);
+      const iso = pickTargetIso(caps, settings, sceneStats);
       if (iso !== null) {
         manual.iso = iso;
       }
     }
 
     const bias = {};
-    const exposureCompensation = pickTargetExposureCompensation(caps, settings);
+    const exposureCompensation = pickTargetExposureCompensation(caps, settings, sceneStats);
     if (exposureCompensation !== null) {
       bias.exposureCompensation = exposureCompensation;
     }
@@ -643,8 +681,11 @@
         await applyTrackAdvancedStep(track, profile.base);
       }
 
-      // Let continuous AE/AWB settle before locking the learned values.
-      await new Promise((resolve) => global.setTimeout(resolve, Math.max(200, Number(config.CAMERA_SETTLE_MS) || 500)));
+      // Let continuous AE/AWB settle briefly before locking the learned values.
+      const settleMs = String(reason || '').includes('code-visible')
+        ? Math.max(60, Number(config.CAMERA_CODE_SETTLE_MS) || 140)
+        : Math.max(200, Number(config.CAMERA_SETTLE_MS) || 500);
+      await new Promise((resolve) => global.setTimeout(resolve, settleMs));
       const sceneStats = sampleTuneSceneStats(dom.video) || preStats;
       state.cameraSceneStats = sceneStats;
       if (!isTuneSceneUsable(sceneStats)) {
@@ -653,7 +694,7 @@
         return false;
       }
       const settledSettings = readTrackSettings(track, null);
-      const learned = buildLearnedTuneProfile(caps, settledSettings);
+      const learned = buildLearnedTuneProfile(caps, settledSettings, sceneStats);
       profile.manual = learned.manual;
       profile.bias = learned.bias;
       await applyTuneProfileSteps(track, profile);
@@ -663,6 +704,48 @@
       });
       state.cameraRetuneWanted = false;
       updateCameraMeta(track, reason || 'tuned-learned');
+      return true;
+    } finally {
+      state.cameraTunePending = false;
+    }
+  }
+
+  async function applyBootstrapTuneProfile(track, reason) {
+    if (!track || typeof track.applyConstraints !== 'function') {
+      return false;
+    }
+
+    const caps = readTrackCapabilities(track, null);
+    if (!caps) {
+      return false;
+    }
+
+    const settings = readTrackSettings(track, null);
+    const sceneStats = sampleTuneSceneStats(dom.video);
+    state.cameraSceneStats = sceneStats;
+
+    const profile = {
+      base: buildBaseTuneStep(caps),
+      manual: {},
+      bias: {},
+    };
+    const learned = buildLearnedTuneProfile(caps, settings, sceneStats);
+    profile.manual = learned.manual;
+    profile.bias = learned.bias;
+
+    if (!Object.keys(profile.base).length && !Object.keys(profile.manual).length && !Object.keys(profile.bias).length) {
+      return false;
+    }
+
+    state.cameraTunePending = true;
+    try {
+      await applyTuneProfileSteps(track, profile);
+      persistTuneProfile(track, profile, null, {
+        hadCode: false,
+        scene: sceneStats || null,
+      });
+      state.cameraRetuneWanted = true;
+      updateCameraMeta(track, reason || 'bootstrap-tuned');
       return true;
     } finally {
       state.cameraTunePending = false;
@@ -735,6 +818,80 @@
     return state.cameraTunePromise;
   };
 
+  app.maybeRetuneCameraFromCodeScene = async function maybeRetuneCameraFromCodeScene(reason) {
+    if (!state.scanning || state.cameraTunePending || state.cameraTunePromise) {
+      return false;
+    }
+
+    const stream = state.cameraStream || dom.video.srcObject;
+    if (!stream || isBenchCameraStream(stream)) {
+      return false;
+    }
+
+    const track = getVideoTrack(stream);
+    if (!track || track.readyState === 'ended') {
+      return false;
+    }
+
+    const now = performance.now();
+    if (!hasRecentCodeSeen(now)) {
+      return false;
+    }
+
+    const sceneStats = sampleTuneSceneStats(dom.video);
+    state.cameraSceneStats = sceneStats;
+    if (!isTuneSceneUsable(sceneStats)) {
+      state.cameraRetuneWanted = true;
+      state.cameraLastCodeRetuneAttemptAt = now;
+      updateCameraMeta(track, reason || 'code-scene-invalid');
+      return false;
+    }
+
+    const profile = state.cameraTuneProfile;
+    const needInitialLearn = !profile;
+    const needCodeLearn = !!(profile && !profile.hadCode);
+    const needSceneRetune = !!state.cameraRetuneWanted;
+    const needDriftRetune = !!(profile && tuneProfileLooksDrifted(track, profile));
+    const needShiftRetune = !!(profile && profile.scene && sceneStats && sceneStatsChanged(sceneStats, profile.scene));
+
+    const cooldownMs = Math.max(
+      500,
+      Number(config.CAMERA_CODE_RETUNE_COOLDOWN_MS)
+      || Number(config.CAMERA_TUNE_REAPPLY_COOLDOWN_MS)
+      || 900
+    );
+    const lastAttemptAt = Number(state.cameraLastCodeRetuneAttemptAt) || 0;
+    const lastTuneAt = Number(state.cameraLastTuneAt) || 0;
+    const gateFrom = (needInitialLearn || needCodeLearn)
+      ? lastAttemptAt
+      : Math.max(lastTuneAt, lastAttemptAt);
+    if ((now - gateFrom) < cooldownMs) {
+      return false;
+    }
+
+    if (!(needInitialLearn || needCodeLearn || needSceneRetune || needDriftRetune || needShiftRetune)) {
+      return false;
+    }
+
+    state.cameraLastCodeRetuneAttemptAt = now;
+    console.warn('[Camera] relearning tune from visible code scene', {
+      needInitialLearn,
+      needCodeLearn,
+      needSceneRetune,
+      needDriftRetune,
+      needShiftRetune,
+      sceneStats,
+      reason: reason || 'code-visible-relearn',
+    });
+    return app.ensureCameraTunedForScan(reason || 'code-visible-relearn', { forceLearn: true });
+  };
+
+  app.noteCodeSceneVisible = function noteCodeSceneVisible(reason) {
+    Promise.resolve(app.maybeRetuneCameraFromCodeScene(reason)).catch((error) => {
+      console.warn('[Camera] code-scene retune failed:', error && error.message ? error.message : error);
+    });
+  };
+
   function attachStream(stream) {
     dom.video.autoplay = true;
     dom.video.playsInline = true;
@@ -790,6 +947,13 @@
     const track = getVideoTrack(stream);
     if (ok) {
       state.cameraMissCount = 0;
+      if (!isBenchCameraStream(stream) && !state.cameraTuneProfile && track) {
+        try {
+          await applyBootstrapTuneProfile(track, 'playback-bootstrap');
+        } catch (error) {
+          console.warn('[Camera] playback bootstrap tune failed:', error && error.message ? error.message : error);
+        }
+      }
       if (state.scanning && !isBenchCameraStream(stream)) {
         state.cameraRetuneWanted = true;
         if (state.cameraTuneProfile) {
@@ -835,6 +999,13 @@
 
         const ready = await waitForVideoReady(config.CAMERA_READY_TIMEOUT_MS);
         state.cameraReady = ready;
+        if (ready && track && !isBenchCameraStream(stream) && !state.cameraTuneProfile) {
+          try {
+            await applyBootstrapTuneProfile(track, 'stream-bootstrap');
+          } catch (error) {
+            console.warn('[Camera] bootstrap tune failed:', error && error.message ? error.message : error);
+          }
+        }
         if (ready && state.scanning && track && !isBenchCameraStream(stream)) {
           state.cameraRetuneWanted = true;
           if (state.cameraTuneProfile) {

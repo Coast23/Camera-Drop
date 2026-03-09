@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Camera Drop File Scanner</title>
+  <link rel="icon" href="data:,">
+  <script src="coi-serviceworker.min.js?v=20260308r2"></script>
+  <style>
+    :root {
+      --bg: #091017;
+      --bg2: #0f1b27;
+      --panel: rgba(8, 12, 18, 0.9);
+      --line: rgba(136, 183, 255, 0.18);
+      --text: #edf4ff;
+      --muted: #9eb0c9;
+      --accent: #8ff3c5;
+      --accent2: #86aefe;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.32);
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      color: var(--text);
+      font: 14px/1.45 "IBM Plex Mono", "JetBrains Mono", Consolas, monospace;
+      background:
+        radial-gradient(circle at 12% 14%, rgba(143, 243, 197, 0.08), transparent 28%),
+        radial-gradient(circle at 86% 18%, rgba(134, 174, 254, 0.12), transparent 26%),
+        linear-gradient(160deg, var(--bg2), var(--bg));
+    }
+    .shell {
+      width: min(1460px, calc(100vw - 24px));
+      margin: 14px auto 26px;
+      display: grid;
+      grid-template-columns: 360px minmax(0, 1fr);
+      gap: 16px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+    }
+    .side {
+      padding: 18px;
+      position: sticky;
+      top: 14px;
+      align-self: start;
+    }
+    .hero {
+      padding: 18px;
+      border-radius: 16px;
+      border: 1px solid rgba(134, 174, 254, 0.15);
+      background: linear-gradient(145deg, rgba(134, 174, 254, 0.12), rgba(143, 243, 197, 0.08));
+      margin-bottom: 16px;
+    }
+    h1 { margin: 0; font-size: 22px; }
+    .sub { margin-top: 8px; color: var(--muted); }
+    .field { margin-bottom: 12px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    label {
+      display: block;
+      margin: 0 0 6px;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    input[type="number"] {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(136, 183, 255, 0.18);
+      background: rgba(3, 6, 10, 0.86);
+      color: var(--text);
+      font: inherit;
+    }
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid transparent;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #07110b;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button.secondary {
+      background: rgba(7, 10, 15, 0.94);
+      color: var(--text);
+      border-color: rgba(136, 183, 255, 0.18);
+    }
+    button:disabled {
+      opacity: 0.42;
+      cursor: not-allowed;
+    }
+    #loadBtn.ready { background: #198754; color: #fff; }
+    #loadBtn.loading { background: #7c3aed; color: #fff; }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .meta {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: 110px minmax(0, 1fr);
+      gap: 8px 12px;
+      align-items: start;
+    }
+    .meta div:nth-child(odd) { color: var(--muted); }
+    .main {
+      padding: 16px;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+      gap: 14px;
+      min-height: calc(100vh - 40px);
+    }
+    .bar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: rgba(4, 8, 14, 0.94);
+      border: 1px solid rgba(136, 183, 255, 0.16);
+    }
+    .status {
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .progress {
+      width: 100%;
+      height: 14px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(136, 183, 255, 0.16);
+    }
+    .progressFill {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      transition: width 120ms linear;
+    }
+    .viewGrid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.9fr);
+      gap: 14px;
+      min-height: 0;
+    }
+    .videoWrap, .deskewWrap {
+      position: relative;
+      overflow: hidden;
+      border-radius: 18px;
+      border: 1px solid rgba(136, 183, 255, 0.14);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.03), transparent),
+        radial-gradient(circle at center, rgba(134, 174, 254, 0.08), transparent 60%),
+        #02060a;
+      min-height: 0;
+    }
+    .videoWrap { aspect-ratio: 9 / 16; }
+    .deskewWrap { min-height: 320px; }
+    #video, #overlay, #deskewedCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: contain;
+    }
+    #deskewedCanvas {
+      background: #000;
+    }
+    #video, #overlay {
+      position: absolute;
+      inset: 0;
+      object-fit: cover;
+    }
+    #overlay { pointer-events: none; }
+    #perfBar {
+      position: absolute;
+      left: 50%;
+      bottom: 8px;
+      transform: translateX(-50%);
+      font-size: 12px;
+      color: rgba(255,255,255,0.84);
+      background: rgba(0,0,0,0.55);
+      border-radius: 999px;
+      padding: 2px 10px;
+      white-space: nowrap;
+    }
+    #scanHint {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+    }
+    #scanHint span {
+      font-size: 14px;
+      color: rgba(255,255,255,0.78);
+      background: rgba(0,0,0,0.45);
+      border-radius: 999px;
+      padding: 6px 12px;
+    }
+    #scanHint.hidden { display: none; }
+    #decodeBar {
+      font-size: 12px;
+      color: var(--muted);
+      padding: 8px 10px;
+      border-top: 1px solid rgba(136, 183, 255, 0.12);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .console {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 14px;
+      min-height: 0;
+    }
+    pre {
+      margin: 0;
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid rgba(136, 183, 255, 0.12);
+      background: rgba(3, 6, 10, 0.82);
+      color: var(--muted);
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow: auto;
+      min-height: 180px;
+      max-height: 260px;
+    }
+    #initOverlay {
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      background: rgba(6, 10, 15, 0.96);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+    }
+    #initOverlay.hidden { display: none; }
+    .progWrap {
+      width: 240px;
+      height: 6px;
+      background: rgba(255,255,255,0.14);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    #progBar {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      transition: width .24s;
+    }
+    #startBtn {
+      display: none;
+      min-width: 160px;
+    }
+    #filePicker { display: none; }
+    @media (max-width: 1100px) {
+      .shell { grid-template-columns: 1fr; }
+      .side { position: static; }
+      .main { min-height: auto; }
+    }
+    @media (max-width: 760px) {
+      .viewGrid, .console { grid-template-columns: 1fr; }
+      .videoWrap { aspect-ratio: 3 / 4; }
+    }
+  </style>
+</head>
+<body>
+  <div id="initOverlay">
+    <h2>文件接收页</h2>
+    <div id="initMsg">正在加载 OpenCV.js…</div>
+    <div class="progWrap"><div id="progBar"></div></div>
+    <button id="startBtn" onclick="onStart()" disabled>开始扫描</button>
+  </div>
+
+  <div class="shell">
+    <aside class="panel side">
+      <div class="hero">
+        <h1>Camera Drop Scanner</h1>
+      </div>
+
+      <div class="grid">
+        <div class="field">
+          <label for="widthInput">Width</label>
+          <input id="widthInput" type="number" min="64" step="1" value="1024">
+        </div>
+        <div class="field">
+          <label for="heightInput">Height</label>
+          <input id="heightInput" type="number" min="64" step="1" value="1024">
+        </div>
+        <div class="field">
+          <label for="strideInput">Stride</label>
+          <input id="strideInput" type="number" min="1" step="1" value="9">
+        </div>
+        <div class="field">
+          <label for="marginInput">Margin</label>
+          <input id="marginInput" type="number" min="0" step="1" value="8">
+        </div>
+        <div class="field">
+          <label for="reservedInput">Reserved</label>
+          <input id="reservedInput" type="number" min="1" step="1" value="6">
+        </div>
+        <div class="field">
+          <label for="captureFpsInput">Code FPS</label>
+          <input id="captureFpsInput" type="number" min="0" max="240" step="0.1" value="12">
+        </div>
+        <div class="field">
+          <label for="samplesPerCodeInput">每码采样</label>
+          <input id="samplesPerCodeInput" type="number" min="1" max="6" step="1" value="3">
+        </div>
+      </div>
+
+      <div class="row">
+        <button id="applyLayoutBtn" class="secondary">应用布局</button>
+        <button id="resetBtn" class="secondary">重置接收</button>
+        <button id="saveBtn" class="secondary" disabled>保存文件</button>
+      </div>
+      <div class="row">
+        <button id="cameraInfoBtn" class="secondary">显示相机信息</button>
+        <button id="loadBtn" class="secondary" onclick="pickModel()">加载模型</button>
+      </div>
+
+      <div class="meta">
+        <div>状态</div><div id="statusText">初始化中</div>
+        <div>布局</div><div id="layoutInfo">-</div>
+        <div>进度</div><div id="progressText">-</div>
+        <div>文件</div><div id="fileInfo">-</div>
+        <div>定位</div><div id="locInfo">-</div>
+        <div>识别</div><div id="decodeInfo">-</div>
+        <div>队列</div><div id="dedupeInfo">-</div>
+        <div>相机</div><div id="cameraInfo">-</div>
+      </div>
+    </aside>
+
+    <section class="panel main">
+      <div class="bar">
+        <div class="status" id="topStatus">等待资源加载</div>
+        <div id="statusBar">初始化中…</div>
+      </div>
+
+      <div class="bar">
+        <div id="statsTop">packets 0 / 0 | unique 0 / 0</div>
+      </div>
+
+      <div class="progress"><div id="progressFill" class="progressFill"></div></div>
+
+      <div class="viewGrid">
+        <div class="videoWrap">
+          <video id="video" autoplay playsinline muted></video>
+          <canvas id="overlay"></canvas>
+          <div id="perfBar">-</div>
+          <div id="scanHint"><span id="hintText">等待摄像头预热</span></div>
+        </div>
+        <div class="deskewWrap">
+          <canvas id="deskewedCanvas"></canvas>
+          <div id="decodeBar">文件识别: -</div>
+        </div>
+      </div>
+
+      <div class="console">
+        <pre id="logBox"></pre>
+        <pre id="cameraMeta"></pre>
+      </div>
+    </section>
+  </div>
+
+  <input type="file" id="filePicker" accept=".onnx">
+
+  <script src="ort.webgpu.min.js?v=20260308r2"></script>
+  <script src="js/ort-env-config.js?v=20260308r2"></script>
+  <script src="js/app-context.js?v=20260309v9"></script>
+  <script src="js/app-cv.js?v=20260309v7"></script>
+  <script src="opencv.js?v=20260308r2"></script>
+  <script src="js/cv-wait.js?v=20260308r2"></script>
+  <script src="js/app-camera.js?v=20260309v10"></script>
+  <script src="js/app-worker.js?v=20260309v8"></script>
+  <script src="js/app-localizer-cv.js?v=20260308r2"></script>
+  <script src="js/app-patch.js?v=20260308r2"></script>
+  <script src="js/app-deskew.js?v=20260309v8"></script>
+  <script src="js/app-model.js?v=20260309v7"></script>
+  <script>window.__CAMDROP_ASSET_VERSION = '20260309v7';</script>
+  <script src="js/rect-codec.js?v=20260309v7"></script>
+  <script src="js/rect-render.js?v=20260308r3"></script>
+  <script src="js/rect-transfer-common.js?v=20260309v7"></script>
+  <script src="js/bench-recognizer-worker-source.js?v=20260308r2"></script>
+  <script src="js/rect-recognizer.js?v=20260308r3"></script>
+  <script src="js/capture-sampling-ui.js?v=20260309v1"></script>
+  <script src="js/file-scanner-page.js?v=20260309v1"></script>
+</body>
+</html>
+
+

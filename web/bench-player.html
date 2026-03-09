@@ -49,8 +49,11 @@
     padding: 10px;
   }
   #playCanvas {
-    width: min(94vw, 92vh);
-    height: min(94vw, 92vh);
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: 96vw;
+    max-height: 92vh;
     background: #000;
     image-rendering: pixelated;
     border: 1px solid #2b2b2b;
@@ -91,6 +94,12 @@
         <option value="builtin">builtin-gen</option>
       </select>
     </label>
+    <label class="ctrl">宽高比
+      <input id="aspectInput" type="number" value="1.7778" min="0.25" max="4" step="0.01">
+    </label>
+    <label class="ctrl">短边像素
+      <input id="shortSideInput" type="number" value="1024" min="240" max="4096" step="16">
+    </label>
     <label class="ctrl">Dict 已加载
       <input id="dictStatus" type="text" value="builtin-gen" readonly>
     </label>
@@ -108,11 +117,12 @@
 <footer>
   <span>Seq: <b id="statSeq" class="mono">1</b></span>
   <span>实际播放 FPS: <b id="statPlayFps" class="mono">0.00</b></span>
+  <span>画布: <b id="statCanvas" class="mono">1024x1024</b></span>
   <span>识别页参数链接: <b id="shareText" class="mono"></b></span>
 </footer>
 
-<script src="js/bench-codebook.js?v=20260306g"></script>
-<script src="js/bench-player-page.js?v=20260307a"></script>
+<script src="js/bench-codebook.js?v=20260308a"></script>
+<script src="js/bench-player-page.js?v=20260308a"></script>
 </body>
 </html>
 

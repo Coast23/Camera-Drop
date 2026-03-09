@@ -1,0 +1,38 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Camera Drop Rect E2E</title>
+</head>
+<body>
+  <div style="display:none" aria-hidden="true">
+    <video id="video" muted playsinline></video>
+    <canvas id="overlay"></canvas>
+    <canvas id="deskewedCanvas"></canvas>
+    <div id="decodeBar"></div>
+    <pre id="cameraMeta"></pre>
+    <div id="scanHint"><span id="hintText"></span></div>
+    <span id="statusBar"></span>
+    <div id="perfBar"></div>
+    <button id="loadBtn" type="button"></button>
+    <div id="initOverlay"></div>
+    <div id="initMsg"></div>
+    <div id="progBar"></div>
+    <button id="startBtn" type="button"></button>
+    <input id="filePicker" type="file" />
+  </div>
+  <canvas id="sceneCanvas" style="display:none"></canvas>
+  <canvas id="codeCanvas" style="display:none"></canvas>
+  <canvas id="deskewCanvas" style="display:none"></canvas>
+  <script src="./opencv.js"></script>
+  <script src="./js/cv-wait.js"></script>
+  <script src="./js/app-context.js?v=20260309v9"></script>
+  <script src="./js/app-worker.js?v=20260308c"></script>
+  <script src="./js/rect-codec.js"></script>
+  <script src="./js/rect-render.js"></script>
+  <script src="./js/bench-recognizer-worker-source.js"></script>
+  <script src="./js/rect-recognizer.js"></script>
+  <script src="./js/rect-e2e-page.js"></script>
+</body>
+</html>

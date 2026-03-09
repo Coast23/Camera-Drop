@@ -2,281 +2,250 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Camera-Drop Scanner</title>
-<!-- coi-serviceworker：为不支持 COOP/COEP 的环境注入跨域头，启用 ORT 多线程 -->
-<script src="coi-serviceworker.min.js"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Camera-Drop</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #eef2ef;
+    --bg2: #dfe7df;
+    --panel: rgba(255,255,255,0.78);
+    --panel-strong: rgba(255,255,255,0.92);
+    --ink: #15201d;
+    --muted: #5f6d67;
+    --line: rgba(21,32,29,0.12);
+    --accent: #0f766e;
+    --accent-2: #14532d;
+    --shadow: 0 24px 80px rgba(21, 32, 29, 0.12);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
   body {
-    background: #0f0f0f;
-    color: #e0e0e0;
-    font-family: system-ui, -apple-system, sans-serif;
-    display: flex;
-    flex-direction: column;
-    height: 100dvh;
-    max-height: -webkit-fill-available;
-    overflow: hidden;
+    color: var(--ink);
+    font: 14px/1.5 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background:
+      radial-gradient(circle at 12% 16%, rgba(15,118,110,0.16), transparent 28%),
+      radial-gradient(circle at 88% 18%, rgba(20,83,45,0.12), transparent 24%),
+      linear-gradient(180deg, #f7faf7 0%, var(--bg) 52%, var(--bg2) 100%);
   }
-
-  header {
+  .shell {
+    width: min(1120px, calc(100% - 32px));
+    margin: 0 auto;
+    min-height: 100vh;
+    padding: 28px 0 36px;
+    display: grid;
+    gap: 18px;
+  }
+  .panel {
+    border: 1px solid var(--line);
+    border-radius: 28px;
+    background: var(--panel);
+    backdrop-filter: blur(18px);
+    box-shadow: var(--shadow);
+  }
+  .hero {
+    padding: 28px 30px 24px;
     display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 18px;
+  }
+  .badge {
+    display: inline-flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    background: #1a1a1a;
-    border-bottom: 1px solid #2a2a2a;
-    flex-shrink: 0;
+    min-height: 30px;
+    padding: 0 12px;
+    border-radius: 999px;
+    background: rgba(15,118,110,0.12);
+    color: var(--accent);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
-  header h1 { font-size: 0.95rem; font-weight: 600; white-space: nowrap; }
-  #statusBar {
-    flex: 1;
-    font-size: 0.7rem;
-    color: #777;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    text-align: right;
+  h1 {
+    margin: 14px 0 8px;
+    font-size: clamp(2rem, 5vw, 3.4rem);
+    line-height: 0.96;
+    letter-spacing: -0.05em;
   }
-  #loadBtn {
-    font-size: 0.75rem;
-    padding: 5px 10px;
-    background: #2563eb;
-    color: #fff;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    flex-shrink: 0;
-    white-space: nowrap;
+  .sub {
+    color: var(--muted);
+    font-size: 15px;
   }
-  #loadBtn.ready  { background: #16a34a; }
-  #loadBtn.loading { background: #9333ea; cursor: default; }
-
-  main {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 6px 6px 0 6px;
-    padding-bottom: calc(6px + env(safe-area-inset-bottom, 12px));
-    overflow: hidden;
+  .profile {
+    min-width: 280px;
+    padding: 16px 18px;
+    border-radius: 20px;
+    background: rgba(21,32,29,0.045);
+    border: 1px solid rgba(21,32,29,0.08);
   }
-
-  .cam-wrap {
-    position: relative;
-    width: 100%;
-    flex: 1;
-    min-height: 0;
-    background: #000;
-    border-radius: 10px;
-    overflow: hidden;
-  }
-  #video {
-    width: 100%; height: 100%;
-    object-fit: cover;
+  .profile strong {
     display: block;
+    margin-bottom: 6px;
+    font-size: 13px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
   }
-  #overlay {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
+  .profile span {
+    display: block;
+    font-size: 15px;
   }
-  #perfBar {
-    position: absolute;
-    bottom: 6px; left: 50%;
-    transform: translateX(-50%);
-    font-size: 0.65rem;
-    color: rgba(255,255,255,0.7);
-    background: rgba(0,0,0,0.45);
-    padding: 2px 10px;
-    border-radius: 20px;
-    pointer-events: none;
-    white-space: nowrap;
+  .grid {
+    display: grid;
+    gap: 18px;
   }
-  #scanHint {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    pointer-events: none;
+  .grid.main {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  #scanHint span {
-    font-size: 0.8rem;
-    color: rgba(255,255,255,0.5);
-    background: rgba(0,0,0,0.5);
-    padding: 6px 14px;
-    border-radius: 20px;
-  }
-  #scanHint.hidden { display: none; }
-
-  .results {
-    flex: 1;
-    min-height: 0;
+  .grid.tools {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
   .card {
-    height: 100%;
-    background: #1a1a1a;
-    border-radius: 8px;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-  .card-title {
-    font-size: 0.62rem;
-    font-weight: 700;
-    letter-spacing: .5px;
-    text-transform: uppercase;
-    color: #666;
-    padding: 2px 7px;
-    background: #222;
-    flex-shrink: 0;
-  }
-  .card canvas {
-    flex: 1;
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
     display: block;
-    background: #111;
-    padding: 3px;
-    transition: opacity 0.5s;
+    min-height: 210px;
+    padding: 24px;
+    border-radius: 26px;
+    text-decoration: none;
+    color: inherit;
+    border: 1px solid var(--line);
+    background: var(--panel-strong);
+    transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
   }
-  #decodeBar {
-    display: none;
-    flex-shrink: 0;
-    font-size: 0.66rem;
-    color: #9ca3af;
-    border-top: 1px solid #2a2a2a;
-    background: #181818;
-    padding: 5px 7px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 18px 46px rgba(21,32,29,0.10);
+    border-color: rgba(15,118,110,0.28);
   }
-  #decodeBar.active { display: block; }
-  #cameraMeta {
-    flex-shrink: 0;
-    min-height: 108px;
-    max-height: 148px;
-    overflow: auto;
-    border-top: 1px solid #2a2a2a;
-    background: #141414;
-    color: #9ca3af;
-    font: 11px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
-    padding: 6px 8px;
-    white-space: pre-wrap;
-    word-break: break-word;
+  .card.primary {
+    background:
+      linear-gradient(180deg, rgba(255,255,255,0.94), rgba(245,251,249,0.92));
   }
-
-  /* 初始化遮罩 */
-  #initOverlay {
-    position: fixed;
-    inset: 0;
-    background: #0f0f0f;
-    display: flex;
-    flex-direction: column;
+  .card.secondary {
+    min-height: 156px;
+    padding: 20px;
+  }
+  .kicker {
+    color: var(--accent);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .card h2 {
+    margin: 10px 0 8px;
+    font-size: 28px;
+    line-height: 1.04;
+    letter-spacing: -0.04em;
+  }
+  .card.secondary h2 {
+    font-size: 22px;
+  }
+  .card p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.7;
+  }
+  .arrow {
+    margin-top: 22px;
+    display: inline-flex;
     align-items: center;
-    justify-content: center;
-    gap: 16px;
-    z-index: 200;
+    min-height: 38px;
+    padding: 0 14px;
+    border-radius: 999px;
+    background: rgba(15,118,110,0.10);
+    color: var(--accent);
+    font-weight: 600;
   }
-  #initOverlay.hidden { display: none; }
-  #initOverlay h2 { font-size: 1.1rem; }
-  #initMsg { font-size: 0.8rem; color: #888; }
-  .prog-wrap {
-    width: 220px;
-    height: 5px;
-    background: #333;
-    border-radius: 3px;
-    overflow: hidden;
+  .section {
+    padding: 24px;
   }
-  #progBar {
-    height: 100%;
-    background: #2563eb;
-    width: 0%;
-    transition: width .3s;
-    border-radius: 3px;
+  .section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
   }
-  #startBtn {
-    padding: 10px 28px;
-    background: #2563eb;
-    border: none;
-    color: #fff;
-    border-radius: 8px;
-    font-size: 0.9rem;
-    cursor: pointer;
-    display: none;
+  .section-head h3 {
+    margin: 0;
+    font-size: 16px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
   }
-  #startBtn:hover { background: #1d4ed8; }
-  #startBtn:disabled { opacity: 0.55; cursor: not-allowed; }
+  .footer {
+    padding: 18px 24px 6px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  @media (max-width: 980px) {
+    .hero {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    .grid.main,
+    .grid.tools {
+      grid-template-columns: 1fr;
+    }
+    .card,
+    .card.secondary {
+      min-height: 0;
+    }
+  }
 </style>
 </head>
 <body>
-
-<div id="initOverlay">
-  <h2>📷 Camera-Drop Scanner</h2>
-  <div id="initMsg">正在加载 OpenCV.js…</div>
-  <div class="prog-wrap"><div id="progBar"></div></div>
-  <button id="startBtn" onclick="onStart()" disabled>开始扫描</button>
-</div>
-
-<header>
-  <h1>📷 Camera-Drop</h1>
-  <span id="statusBar">初始化中…</span>
-  <button id="loadBtn" onclick="pickModel()">加载模型</button>
-</header>
-<main>
-  <div class="cam-wrap">
-    <video id="video" autoplay playsinline muted></video>
-    <canvas id="overlay"></canvas>
-    <div id="perfBar">—</div>
-    <div id="scanHint"><span id="hintText">请加载 .onnx 模型</span></div>
-  </div>
-  <div class="results">
-    <div class="card">
-      <div class="card-title">
-        Deskewed
-        <button id="dlBtn" onclick="downloadDeskewed()" style="font-size:0.6rem;padding:1px 6px;background:#333;color:#aaa;border:1px solid #555;border-radius:4px;cursor:pointer;">保存</button>
+  <main class="shell">
+    <section class="panel hero">
+      <div>
+        <h1>Camera-Drop</h1>
       </div>
-      <canvas id="deskewedCanvas"></canvas>
-      <div id="decodeBar">等待识别…</div>
-      <pre id="cameraMeta">&#x7B49;&#x5F85;&#x76F8;&#x673A;&#x4FE1;&#x606F;&#x2026;</pre>
-    </div>
-  </div>
-</main>
+    </section>
 
-<input type="file" id="filePicker" accept=".onnx" style="display:none">
+    <section class="grid main">
+      <a class="card primary" href="./file-player.html">
+        <div class="kicker">Transfer</div>
+        <h2>Player</h2>
+        <p>选择文件，预生成码帧，按指定 fps 播放。</p>
+        <div class="arrow">Open</div>
+      </a>
+      <a class="card primary" href="./file-scanner.html">
+        <div class="kicker">Transfer</div>
+        <h2>Scanner</h2>
+        <p>启动摄像头接收文件，查看解码进度并保存结果。</p>
+        <div class="arrow">Open</div>
+      </a>
+    </section>
 
-<script src="ort.webgpu.min.js"></script>
-<script src="js/ort-env-config.js"></script>
-<script src="js/app-context.js?v=20260308d"></script>
-<script src="js/app-cv.js?v=20260308c"></script>
-<script src="opencv.js"></script>
-<script src="js/cv-wait.js"></script>
-<script src="js/app-camera.js?v=20260308d"></script>
-<script src="js/app-worker.js?v=20260308c"></script>
-<script src="js/app-localizer-cv.js?v=20260306w"></script>
-<script src="js/app-patch.js?v=20260307a"></script>
-<script src="js/app-deskew.js?v=20260308c"></script>
-<script src="js/app-recognizer.js?v=20260307d"></script>
-<script src="js/app-model.js?v=20260308d"></script>
+    <section class="panel section">
+      <div class="section-head">
+        <h3>调试工具</h3>
+      </div>
+      <div class="grid tools">
+        <a class="card secondary" href="./status.html">
+          <div class="kicker">Debug</div>
+          <h2>Camera Status</h2>
+          <p>测试浏览器相机 API、首帧回调和参数锁定能力。</p>
+        </a>
+        <a class="card secondary" href="./deskew-test.html">
+          <div class="kicker">Debug</div>
+          <h2>Deskew Test</h2>
+          <p>相机、定位、deskew 和识别链路调试入口。</p>
+        </a>
+        <a class="card secondary" href="./bench-player.html">
+          <div class="kicker">Bench</div>
+          <h2>Bench Player</h2>
+          <p>播放基准测试码帧。</p>
+        </a>
+        <a class="card secondary" href="./bench-recognizer.html">
+          <div class="kicker">Bench</div>
+          <h2>Bench Recognizer</h2>
+          <p>观察识别准确率、fps 和队列状态。</p>
+        </a>
+      </div>
+    </section>
+
+    <div class="footer">Camera-Drop Web Tools</div>
+  </main>
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
