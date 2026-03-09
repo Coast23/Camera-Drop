@@ -18,18 +18,18 @@ inline uint32_t calculate_crc32(const uint8_t* data, size_t length){
 struct FountainMetadata {
     uint32_t file_size;
     uint32_t original_size;
-    uint32_t block_id;
+    uint16_t block_id;
 
     void serialize(uint8_t* buffer) const {
         std::memcpy(buffer, &file_size, 4);
         std::memcpy(buffer + 4, &original_size, 4);
-        std::memcpy(buffer + 8, &block_id, 4);
+        std::memcpy(buffer + 8, &block_id, 2);
     }
  
     void deserialize(const uint8_t* buffer){
         std::memcpy(&file_size, buffer, 4);
         std::memcpy(&original_size, buffer + 4, 4);
-        std::memcpy(&block_id, buffer + 8, 4);
+        std::memcpy(&block_id, buffer + 8, 2);
     }
 };
 
@@ -54,7 +54,7 @@ public:
     }
 
     // 序列化为字节流
-    // Header(12) + Payload + CRC32(4)
+    // Header(10) + Payload + CRC32(4)
     std::vector<uint8_t> serialize() const {
         std::vector<uint8_t> result(Config::FOUNTAIN_HEADER_SIZE + data_.size() + 4);
         metadata_.serialize(result.data());

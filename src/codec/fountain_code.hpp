@@ -12,7 +12,7 @@ extern "C" {
 #include <stdexcept>
 
 // 确保 wirehair_init 全局只被调用一次
-inline void wirehair_init_once() {
+inline void wirehair_init_once(){
     static std::once_flag flag;
     std::call_once(flag, [](){
         if(wirehair_init() != Wirehair_Success) {
@@ -89,7 +89,7 @@ class FountainDecoder {
 public:
     FountainDecoder()
         : codec_(nullptr), file_size_(0), original_size_(0), init_(false), is_complete_(false) {
-            wirehair_init();
+            wirehair_init_once();
     }
     ~FountainDecoder(){
         if(codec_) wirehair_free(codec_);
