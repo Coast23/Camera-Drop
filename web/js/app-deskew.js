@@ -194,9 +194,6 @@
     state.pendingRender = null;
     state.lastDeskewTime = performance.now();
     dom.dskCvs.style.opacity = '1';
-    if (typeof app.noteCodeSceneVisible === 'function') {
-      app.noteCodeSceneVisible('deskew-visible');
-    }
     if (typeof app.enqueueRecognizeFrame === 'function') {
       app.enqueueRecognizeFrame();
     }
@@ -524,5 +521,4 @@
 
   global.downloadDeskewed = app.downloadDeskewed;
 })(window);
-
 

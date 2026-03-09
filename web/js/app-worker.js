@@ -1044,9 +1044,6 @@ self.onmessage=async e=>{
           task.render = null;
           state.lastDeskewTime = performance.now();
           dom.dskCvs.style.opacity = '1';
-          if (typeof app.noteCodeSceneVisible === 'function') {
-            app.noteCodeSceneVisible('deskew-visible-direct');
-          }
           if (typeof app.enqueueRecognizeFrame === 'function') {
             app.enqueueRecognizeFrame();
           }
@@ -1054,9 +1051,6 @@ self.onmessage=async e=>{
           app.renderDeskew(state.fineGl, dom.dskCvs, state.lastCorners, 1.0, dom.video, config.FINE_RENDER_SIZE);
           state.lastDeskewTime = performance.now();
           dom.dskCvs.style.opacity = '1';
-          if (typeof app.noteCodeSceneVisible === 'function') {
-            app.noteCodeSceneVisible('deskew-visible-bootstrap');
-          }
           if (typeof app.enqueueRecognizeFrame === 'function') {
             app.enqueueRecognizeFrame();
           }

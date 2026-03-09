@@ -46,7 +46,7 @@
     { id: 'getCapabilities', label: 'MediaStreamTrack.getCapabilities()', why: '看曝光/白平衡/ISO/缩放能力' },
     { id: 'getSettings', label: 'MediaStreamTrack.getSettings()', why: '看当前实际生效参数' },
     { id: 'getConstraints', label: 'MediaStreamTrack.getConstraints()', why: '看当前 track 上的约束' },
-    { id: 'applyConstraints', label: 'MediaStreamTrack.applyConstraints()', why: '下发一步到位参数和后续重学结果' },
+    { id: 'applyConstraints', label: 'MediaStreamTrack.applyConstraints()', why: '下发一步到位参数' },
     { id: 'createImageBitmap', label: 'createImageBitmap(video)', why: '抓视频帧进 worker / 精定位队列' },
     { id: 'offscreenCanvas', label: 'OffscreenCanvas', why: '相机采样、blur、deskew、识别预处理' },
     { id: 'worker', label: 'Worker', why: 'YOLO / 识别多 worker 消费' },
@@ -198,19 +198,6 @@
     };
   }
 
-  function computeSceneExposureRatio(sceneStats) {
-    if (!sceneStats || !Number.isFinite(Number(sceneStats.mean))) {
-      return 1;
-    }
-    const mean = Math.max(1, Number(sceneStats.mean));
-    const target = 118;
-    const tolerance = 10;
-    if (Math.abs(mean - target) <= tolerance) {
-      return 1;
-    }
-    return clampNumeric(target / mean, 0.28, 1.18);
-  }
-
   function pickTargetColorTemperature(caps, settings) {
     if (!caps || !caps.colorTemperature) {
       return null;
@@ -228,7 +215,7 @@
     return preferred;
   }
 
-  function pickTargetExposureTime(caps, settings, sceneStats) {
+  function pickTargetExposureTime(caps, settings) {
     if (!caps || !caps.exposureTime) {
       return null;
     }
@@ -236,18 +223,18 @@
     const current = settings && Number.isFinite(Number(settings.exposureTime))
       ? Number(settings.exposureTime)
       : NaN;
-    if (!Number.isFinite(current)) {
-      return clampNumeric(range.lo, range.lo, range.hi);
+    const darkenRatio = 0.82;
+    if (Number.isFinite(current)) {
+      let target = clampNumeric(current * darkenRatio, range.lo, range.hi);
+      if (Number.isFinite(range.step) && range.step > 0 && target !== null) {
+        target = Math.round(target / range.step) * range.step;
+      }
+      return clampNumeric(target, range.lo, range.hi);
     }
-    const ratio = computeSceneExposureRatio(sceneStats);
-    let target = clampNumeric(current * ratio, range.lo, range.hi);
-    if (Number.isFinite(range.step) && range.step > 0 && target !== null) {
-      target = Math.round(target / range.step) * range.step;
-    }
-    return clampNumeric(target, range.lo, range.hi);
+    return clampNumeric(range.lo, range.lo, range.hi);
   }
 
-  function pickTargetIso(caps, settings, sceneStats) {
+  function pickTargetIso(caps, settings) {
     if (!caps || !caps.iso) {
       return null;
     }
@@ -259,12 +246,10 @@
     if (!Number.isFinite(current)) {
       return clampNumeric(400, range.lo, ceiling);
     }
-    const ratio = computeSceneExposureRatio(sceneStats);
-    const isoRatio = clampNumeric(Math.sqrt(ratio), 0.45, 1.12);
-    return clampNumeric(current * isoRatio, range.lo, ceiling);
+    return clampNumeric(current, range.lo, ceiling);
   }
 
-  function pickTargetExposureCompensation(caps, settings, sceneStats) {
+  function pickTargetExposureCompensation(caps, settings) {
     if (!caps || !caps.exposureCompensation) {
       return null;
     }
@@ -273,10 +258,6 @@
       ? Number(settings.exposureCompensation)
       : 0;
     let target = Math.min(current, -1.3333334);
-    if (sceneStats && Number.isFinite(Number(sceneStats.mean))) {
-      const extraStops = Math.min(2.0, Math.max(0, (Number(sceneStats.mean) - 118) / 36));
-      target = Math.min(target, -1.3333334 - extraStops);
-    }
     if (Number.isFinite(range.step) && range.step > 0) {
       target = Math.round(target / range.step) * range.step;
     }
@@ -597,14 +578,14 @@
       }
     }
     if (caps && Array.isArray(caps.exposureMode) && caps.exposureMode.includes('manual') && caps.exposureTime) {
-      const exposureTime = pickTargetExposureTime(caps, settings, scene);
+      const exposureTime = pickTargetExposureTime(caps, settings);
       if (exposureTime !== null) {
         manual.exposureMode = 'manual';
         manual.exposureTime = exposureTime;
       }
     }
     if (caps && caps.iso) {
-      const iso = pickTargetIso(caps, settings, scene);
+      const iso = pickTargetIso(caps, settings);
       if (iso !== null) {
         manual.iso = iso;
       }
@@ -615,7 +596,7 @@
 
     const bias = {};
     if (caps && caps.exposureCompensation) {
-      const exposureCompensation = pickTargetExposureCompensation(caps, settings, scene);
+      const exposureCompensation = pickTargetExposureCompensation(caps, settings);
       if (exposureCompensation !== null) {
         bias.exposureCompensation = exposureCompensation;
       }

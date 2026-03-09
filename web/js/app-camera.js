@@ -7,17 +7,6 @@
   const dom = app.dom;
   const ui = app.ui;
 
-  const tuneSceneSampleN = Math.max(12, Number(config.CAMERA_TUNE_SCENE_SAMPLE_N) || 24);
-  const tuneSceneCanvas = typeof OffscreenCanvas !== 'undefined'
-    ? new OffscreenCanvas(tuneSceneSampleN, tuneSceneSampleN)
-    : (() => {
-        const cvs = document.createElement('canvas');
-        cvs.width = tuneSceneSampleN;
-        cvs.height = tuneSceneSampleN;
-        return cvs;
-      })();
-  const tuneSceneCtx = tuneSceneCanvas.getContext('2d', { willReadFrequently: true });
-
   function buildVideoConstraints() {
     const supported = navigator.mediaDevices && typeof navigator.mediaDevices.getSupportedConstraints === 'function'
       ? navigator.mediaDevices.getSupportedConstraints()
@@ -127,9 +116,13 @@
     const payload = {
       note: note || '',
       ready: !!state.cameraReady,
-      retuneWanted: !!state.cameraRetuneWanted,
-      scene: state.cameraSceneStats ? safeJson(state.cameraSceneStats) : null,
       requested: safeJson(buildVideoConstraints()),
+      tuneProfile: state.cameraTuneProfile ? safeJson({
+        base: state.cameraTuneProfile.base || {},
+        manual: state.cameraTuneProfile.manual || {},
+        bias: state.cameraTuneProfile.bias || {},
+        expected: state.cameraTuneProfile.expected || null,
+      }) : null,
       track: track ? {
         label: track.label || '',
         readyState: track.readyState || '',
@@ -247,102 +240,6 @@
     return value;
   }
 
-  function sampleTuneSceneStats(source) {
-    const srcW = source ? (source.videoWidth || source.width || 0) : 0;
-    const srcH = source ? (source.videoHeight || source.height || 0) : 0;
-    if (!srcW || !srcH || !tuneSceneCtx) {
-      return null;
-    }
-
-    const marginRatio = Math.max(0, Math.min(0.35, Number(config.CAMERA_TUNE_SCENE_MARGIN_RATIO) || 0.18));
-    const marginX = Math.round(srcW * marginRatio);
-    const marginY = Math.round(srcH * marginRatio);
-    const sampleX = Math.max(0, Math.min(srcW - 1, marginX));
-    const sampleY = Math.max(0, Math.min(srcH - 1, marginY));
-    const sampleW = Math.max(1, srcW - 2 * marginX);
-    const sampleH = Math.max(1, srcH - 2 * marginY);
-    const N = tuneSceneSampleN;
-
-    tuneSceneCtx.drawImage(source, sampleX, sampleY, sampleW, sampleH, 0, 0, N, N);
-    const data = tuneSceneCtx.getImageData(0, 0, N, N).data;
-
-    let sum = 0;
-    let min = 255;
-    let max = 0;
-    let gradSum = 0;
-    let gradCount = 0;
-    const gray = new Uint8Array(N * N);
-
-    for (let i = 0; i < gray.length; i++) {
-      const g = (data[i * 4] * 77 + data[i * 4 + 1] * 150 + data[i * 4 + 2] * 29) >> 8;
-      gray[i] = g;
-      sum += g;
-      if (g < min) min = g;
-      if (g > max) max = g;
-    }
-
-    for (let y = 1; y < N - 1; y++) {
-      const row = y * N;
-      for (let x = 1; x < N - 1; x++) {
-        const idx = row + x;
-        gradSum += Math.abs(gray[idx + 1] - gray[idx - 1]);
-        gradSum += Math.abs(gray[idx + N] - gray[idx - N]);
-        gradCount += 2;
-      }
-    }
-
-    return {
-      mean: sum / gray.length,
-      range: max - min,
-      min,
-      max,
-      blur: gradCount ? (gradSum / gradCount) : 0,
-      width: srcW,
-      height: srcH,
-    };
-  }
-
-  function isTuneSceneUsable(stats) {
-    if (!stats) {
-      return false;
-    }
-    const minLuma = Math.max(0, Number(config.CAMERA_TUNE_SCENE_MIN_LUMA) || 22);
-    const maxLuma = Math.min(255, Number(config.CAMERA_TUNE_SCENE_MAX_LUMA) || 242);
-    const minRange = Math.max(8, Number(config.CAMERA_TUNE_SCENE_MIN_RANGE) || 26);
-    const minBlur = Math.max(1, Number(config.CAMERA_TUNE_SCENE_MIN_BLUR) || 4);
-    return stats.mean >= minLuma
-      && stats.mean <= maxLuma
-      && stats.range >= minRange
-      && stats.blur >= minBlur;
-  }
-
-  function hasRecentCodeSeen(now) {
-    const ttlMs = Math.max(300, Number(config.CAMERA_TUNE_RECENT_CODE_TTL_MS) || 1400);
-    if (state.lastDeskewTime && (now - state.lastDeskewTime) <= ttlMs) {
-      return true;
-    }
-    if (state.lastCoarseGateTime && (now - state.lastCoarseGateTime) <= ttlMs) {
-      return true;
-    }
-    return false;
-  }
-
-  function sceneStatsChanged(current, baseline) {
-    if (!current || !baseline) {
-      return false;
-    }
-    if (Math.abs((current.mean || 0) - (baseline.mean || 0)) >= 16) {
-      return true;
-    }
-    if (Math.abs((current.range || 0) - (baseline.range || 0)) >= 18) {
-      return true;
-    }
-    const baseBlur = Math.max(1, Number(baseline.blur) || 0);
-    const curBlur = Math.max(0, Number(current.blur) || 0);
-    const blurRatio = Math.abs(curBlur - baseBlur) / baseBlur;
-    return blurRatio >= 0.35;
-  }
-
   function capabilityRange(cap, fallbackMin, fallbackMax) {
     if (!cap) {
       return { lo: fallbackMin, hi: fallbackMax, step: NaN };
@@ -373,22 +270,7 @@
     return preferred;
   }
 
-  function computeSceneExposureRatio(sceneStats) {
-    if (!sceneStats || !Number.isFinite(Number(sceneStats.mean))) {
-      return null;
-    }
-    const mean = Math.max(1, Number(sceneStats.mean));
-    const target = Math.max(24, Math.min(220, Number(config.CAMERA_TUNE_TARGET_LUMA) || 118));
-    const tolerance = Math.max(0, Number(config.CAMERA_TUNE_TARGET_LUMA_TOLERANCE) || 10);
-    if (Math.abs(mean - target) <= tolerance) {
-      return 1;
-    }
-    const minRatio = Math.max(0.1, Math.min(1, Number(config.CAMERA_TUNE_EXPOSURE_MIN_RATIO) || 0.28));
-    const maxRatio = Math.max(1, Number(config.CAMERA_TUNE_EXPOSURE_MAX_RATIO) || 1.18);
-    return clampNumeric(target / mean, minRatio, maxRatio);
-  }
-
-  function pickTargetIso(caps, settings, sceneStats) {
+  function pickTargetIso(caps, settings) {
     if (!caps || !caps.iso) {
       return null;
     }
@@ -397,20 +279,13 @@
       ? Number(settings.iso)
       : NaN;
     const ceiling = Math.min(hi, Math.max(lo, Number(config.CAMERA_ISO_MAX) || 400));
-    const sceneRatio = computeSceneExposureRatio(sceneStats);
-    if (Number.isFinite(cur) && Number.isFinite(sceneRatio)) {
-      const minRatio = Math.max(0.1, Math.min(1, Number(config.CAMERA_TUNE_ISO_MIN_RATIO) || 0.45));
-      const maxRatio = Math.max(1, Number(config.CAMERA_TUNE_ISO_MAX_RATIO) || 1.12);
-      const isoRatio = clampNumeric(Math.sqrt(sceneRatio), minRatio, maxRatio);
-      return clampNumeric(cur * isoRatio, lo, ceiling);
-    }
     if (Number.isFinite(cur)) {
       return clampNumeric(cur, lo, ceiling);
     }
     return clampNumeric(400, lo, ceiling);
   }
 
-  function pickTargetExposureTime(caps, settings, sceneStats) {
+  function pickTargetExposureTime(caps, settings) {
     if (!caps || !caps.exposureTime) {
       return null;
     }
@@ -418,22 +293,18 @@
     const cur = settings && Number.isFinite(Number(settings.exposureTime))
       ? Number(settings.exposureTime)
       : NaN;
-    const sceneRatio = computeSceneExposureRatio(sceneStats);
-    if (Number.isFinite(cur) && Number.isFinite(sceneRatio)) {
-      let target = clampNumeric(cur * sceneRatio, lo, hi);
+    const darkenRatio = Math.min(1, Math.max(0.4, Number(config.CAMERA_EXPOSURE_DARKEN_RATIO) || 0.82));
+    if (Number.isFinite(cur)) {
+      let target = clampNumeric(cur * darkenRatio, lo, hi);
       if (Number.isFinite(step) && step > 0 && target !== null) {
         target = Math.round(target / step) * step;
       }
       return clampNumeric(target, lo, hi);
     }
-    const darkenRatio = Math.min(1, Math.max(0.4, Number(config.CAMERA_EXPOSURE_DARKEN_RATIO) || 0.82));
-    if (Number.isFinite(cur)) {
-      return clampNumeric(cur * darkenRatio, lo, hi);
-    }
     return clampNumeric(lo, lo, hi);
   }
 
-  function pickTargetExposureCompensation(caps, settings, sceneStats) {
+  function pickTargetExposureCompensation(caps, settings) {
     if (!caps || !caps.exposureCompensation) {
       return null;
     }
@@ -445,14 +316,6 @@
       ? Number(config.CAMERA_EXPOSURE_COMP_TARGET)
       : -1.3333334;
     let target = Math.min(cur, targetBase);
-    if (sceneStats && Number.isFinite(Number(sceneStats.mean))) {
-      const mean = Number(sceneStats.mean);
-      const targetLuma = Math.max(24, Math.min(220, Number(config.CAMERA_TUNE_TARGET_LUMA) || 118));
-      if (mean > targetLuma) {
-        const extraStops = Math.min(2.0, (mean - targetLuma) / 36);
-        target = Math.min(target, targetBase - extraStops);
-      }
-    }
     if (!Number.isFinite(target)) {
       target = targetBase;
     }
@@ -504,7 +367,7 @@
     return base;
   }
 
-  function buildLearnedTuneProfile(caps, settings, sceneStats) {
+  function buildFixedTuneProfile(caps, settings) {
     const manual = {};
     if (caps && Array.isArray(caps.whiteBalanceMode) && caps.whiteBalanceMode.includes('manual') && caps.colorTemperature) {
       const colorTemperature = pickTargetColorTemperature(caps, settings);
@@ -514,21 +377,21 @@
       }
     }
     if (caps && Array.isArray(caps.exposureMode) && caps.exposureMode.includes('manual') && caps.exposureTime) {
-      const exposureTime = pickTargetExposureTime(caps, settings, sceneStats);
+      const exposureTime = pickTargetExposureTime(caps, settings);
       if (exposureTime !== null) {
         manual.exposureMode = 'manual';
         manual.exposureTime = exposureTime;
       }
     }
     if (caps && caps.iso) {
-      const iso = pickTargetIso(caps, settings, sceneStats);
+      const iso = pickTargetIso(caps, settings);
       if (iso !== null) {
         manual.iso = iso;
       }
     }
 
     const bias = {};
-    const exposureCompensation = pickTargetExposureCompensation(caps, settings, sceneStats);
+    const exposureCompensation = pickTargetExposureCompensation(caps, settings);
     if (exposureCompensation !== null) {
       bias.exposureCompensation = exposureCompensation;
     }
@@ -591,126 +454,12 @@
       manual: profile && profile.manual ? { ...profile.manual } : {},
       bias: profile && profile.bias ? { ...profile.bias } : {},
       expected: snapshotTuneExpectation(settings),
-      hadCode: !!(extra && extra.hadCode),
-      scene: extra && extra.scene ? { ...extra.scene } : null,
     };
     state.cameraLastTuneAt = performance.now();
-    state.cameraLastTuneCheckAt = state.cameraLastTuneAt;
     return settings;
   }
 
-  function tuneProfileLooksDrifted(track, profile) {
-    if (!profile || !profile.expected) {
-      return false;
-    }
-    const settings = readTrackSettings(track, null);
-    if (!settings) {
-      return false;
-    }
-
-    const expected = profile.expected;
-    if (expected.focusMode && settings.focusMode && settings.focusMode !== expected.focusMode) {
-      return true;
-    }
-    if (expected.whiteBalanceMode && settings.whiteBalanceMode && settings.whiteBalanceMode !== expected.whiteBalanceMode) {
-      return true;
-    }
-    if (expected.exposureMode && settings.exposureMode && settings.exposureMode !== expected.exposureMode) {
-      return true;
-    }
-
-    const wbDrift = Math.max(50, Number(config.CAMERA_TUNE_WB_DRIFT_K) || 250);
-    const expDriftRatio = Math.max(0.1, Number(config.CAMERA_TUNE_EXPOSURE_DRIFT_RATIO) || 0.35);
-    const isoDrift = Math.max(10, Number(config.CAMERA_TUNE_ISO_DRIFT) || 80);
-
-    const currentColorTemperature = settingsNumber(settings, 'colorTemperature');
-    if (expected.colorTemperature !== null && currentColorTemperature !== null
-        && Math.abs(currentColorTemperature - expected.colorTemperature) > wbDrift) {
-      return true;
-    }
-
-    const currentExposureTime = settingsNumber(settings, 'exposureTime');
-    if (expected.exposureTime !== null && currentExposureTime !== null && expected.exposureTime > 0) {
-      const diffRatio = Math.abs(currentExposureTime - expected.exposureTime) / Math.max(expected.exposureTime, 1e-3);
-      if (diffRatio > expDriftRatio) {
-        return true;
-      }
-    }
-
-    const currentIso = settingsNumber(settings, 'iso');
-    if (expected.iso !== null && currentIso !== null && Math.abs(currentIso - expected.iso) > isoDrift) {
-      return true;
-    }
-
-    const currentExposureCompensation = settingsNumber(settings, 'exposureCompensation');
-    if (expected.exposureCompensation !== null && currentExposureCompensation !== null
-        && Math.abs(currentExposureCompensation - expected.exposureCompensation) > 0.26) {
-      return true;
-    }
-
-    return false;
-  }
-
-  async function learnTuneProfile(track, reason) {
-    if (!track || typeof track.applyConstraints !== 'function') {
-      return false;
-    }
-
-    const caps = readTrackCapabilities(track, null);
-    if (!caps) {
-      return false;
-    }
-
-    const preStats = sampleTuneSceneStats(dom.video);
-    state.cameraSceneStats = preStats;
-    if (!isTuneSceneUsable(preStats)) {
-      state.cameraRetuneWanted = true;
-      updateCameraMeta(track, reason || 'tune-scene-invalid');
-      return false;
-    }
-
-    const profile = {
-      base: buildBaseTuneStep(caps),
-      manual: {},
-      bias: {},
-    };
-
-    state.cameraTunePending = true;
-    try {
-      if (profile.base && Object.keys(profile.base).length) {
-        await applyTrackAdvancedStep(track, profile.base);
-      }
-
-      // Let continuous AE/AWB settle briefly before locking the learned values.
-      const settleMs = String(reason || '').includes('code-visible')
-        ? Math.max(60, Number(config.CAMERA_CODE_SETTLE_MS) || 140)
-        : Math.max(200, Number(config.CAMERA_SETTLE_MS) || 500);
-      await new Promise((resolve) => global.setTimeout(resolve, settleMs));
-      const sceneStats = sampleTuneSceneStats(dom.video) || preStats;
-      state.cameraSceneStats = sceneStats;
-      if (!isTuneSceneUsable(sceneStats)) {
-        state.cameraRetuneWanted = true;
-        updateCameraMeta(track, reason || 'tune-scene-invalid');
-        return false;
-      }
-      const settledSettings = readTrackSettings(track, null);
-      const learned = buildLearnedTuneProfile(caps, settledSettings, sceneStats);
-      profile.manual = learned.manual;
-      profile.bias = learned.bias;
-      await applyTuneProfileSteps(track, profile);
-      persistTuneProfile(track, profile, settledSettings, {
-        hadCode: hasRecentCodeSeen(performance.now()),
-        scene: sceneStats,
-      });
-      state.cameraRetuneWanted = false;
-      updateCameraMeta(track, reason || 'tuned-learned');
-      return true;
-    } finally {
-      state.cameraTunePending = false;
-    }
-  }
-
-  async function applyBootstrapTuneProfile(track, reason) {
+  async function applyFixedTuneProfile(track, reason) {
     if (!track || typeof track.applyConstraints !== 'function') {
       return false;
     }
@@ -721,17 +470,15 @@
     }
 
     const settings = readTrackSettings(track, null);
-    const sceneStats = sampleTuneSceneStats(dom.video);
-    state.cameraSceneStats = sceneStats;
 
     const profile = {
       base: buildBaseTuneStep(caps),
       manual: {},
       bias: {},
     };
-    const learned = buildLearnedTuneProfile(caps, settings, sceneStats);
-    profile.manual = learned.manual;
-    profile.bias = learned.bias;
+    const fixed = buildFixedTuneProfile(caps, settings);
+    profile.manual = fixed.manual;
+    profile.bias = fixed.bias;
 
     if (!Object.keys(profile.base).length && !Object.keys(profile.manual).length && !Object.keys(profile.bias).length) {
       return false;
@@ -740,12 +487,8 @@
     state.cameraTunePending = true;
     try {
       await applyTuneProfileSteps(track, profile);
-      persistTuneProfile(track, profile, null, {
-        hadCode: false,
-        scene: sceneStats || null,
-      });
-      state.cameraRetuneWanted = true;
-      updateCameraMeta(track, reason || 'bootstrap-tuned');
+      persistTuneProfile(track, profile, settings);
+      updateCameraMeta(track, reason || 'fixed-tuned');
       return true;
     } finally {
       state.cameraTunePending = false;
@@ -769,13 +512,8 @@
     state.cameraTunePending = true;
     try {
       await applyTuneProfileSteps(track, profile);
-      const sceneStats = sampleTuneSceneStats(dom.video);
-      state.cameraSceneStats = sceneStats;
-      persistTuneProfile(track, profile, null, {
-        hadCode: state.cameraTuneProfile && state.cameraTuneProfile.hadCode,
-        scene: sceneStats || (state.cameraTuneProfile ? state.cameraTuneProfile.scene : null),
-      });
-      updateCameraMeta(track, reason || 'tuned-reapplied');
+      persistTuneProfile(track, profile, null);
+      updateCameraMeta(track, reason || 'fixed-reapplied');
       return true;
     } finally {
       state.cameraTunePending = false;
@@ -798,98 +536,20 @@
     }
 
     const reuseOnly = !!(options && options.reuseOnly);
-    const forceLearn = !!(options && options.forceLearn);
 
     state.cameraTunePromise = Promise.resolve().then(async () => {
-      if (forceLearn) {
-        return learnTuneProfile(track, reason || 'tuned-learned');
-      }
       if (reuseOnly) {
-        return state.cameraTuneProfile ? reapplyTuneProfile(track, reason || 'tuned-reapplied') : false;
+        return state.cameraTuneProfile ? reapplyTuneProfile(track, reason || 'fixed-reapplied') : false;
       }
       if (state.cameraTuneProfile) {
-        return reapplyTuneProfile(track, reason || 'tuned-reapplied');
+        return reapplyTuneProfile(track, reason || 'fixed-reapplied');
       }
-      return learnTuneProfile(track, reason || 'tuned-learned');
+      return applyFixedTuneProfile(track, reason || 'fixed-tuned');
     }).finally(() => {
       state.cameraTunePromise = null;
     });
 
     return state.cameraTunePromise;
-  };
-
-  app.maybeRetuneCameraFromCodeScene = async function maybeRetuneCameraFromCodeScene(reason) {
-    if (!state.scanning || state.cameraTunePending || state.cameraTunePromise) {
-      return false;
-    }
-
-    const stream = state.cameraStream || dom.video.srcObject;
-    if (!stream || isBenchCameraStream(stream)) {
-      return false;
-    }
-
-    const track = getVideoTrack(stream);
-    if (!track || track.readyState === 'ended') {
-      return false;
-    }
-
-    const now = performance.now();
-    if (!hasRecentCodeSeen(now)) {
-      return false;
-    }
-
-    const sceneStats = sampleTuneSceneStats(dom.video);
-    state.cameraSceneStats = sceneStats;
-    if (!isTuneSceneUsable(sceneStats)) {
-      state.cameraRetuneWanted = true;
-      state.cameraLastCodeRetuneAttemptAt = now;
-      updateCameraMeta(track, reason || 'code-scene-invalid');
-      return false;
-    }
-
-    const profile = state.cameraTuneProfile;
-    const needInitialLearn = !profile;
-    const needCodeLearn = !!(profile && !profile.hadCode);
-    const needSceneRetune = !!state.cameraRetuneWanted;
-    const needDriftRetune = !!(profile && tuneProfileLooksDrifted(track, profile));
-    const needShiftRetune = !!(profile && profile.scene && sceneStats && sceneStatsChanged(sceneStats, profile.scene));
-
-    const cooldownMs = Math.max(
-      500,
-      Number(config.CAMERA_CODE_RETUNE_COOLDOWN_MS)
-      || Number(config.CAMERA_TUNE_REAPPLY_COOLDOWN_MS)
-      || 900
-    );
-    const lastAttemptAt = Number(state.cameraLastCodeRetuneAttemptAt) || 0;
-    const lastTuneAt = Number(state.cameraLastTuneAt) || 0;
-    const gateFrom = (needInitialLearn || needCodeLearn)
-      ? lastAttemptAt
-      : Math.max(lastTuneAt, lastAttemptAt);
-    if ((now - gateFrom) < cooldownMs) {
-      return false;
-    }
-
-    if (!(needInitialLearn || needCodeLearn || needSceneRetune || needDriftRetune || needShiftRetune)) {
-      return false;
-    }
-
-    state.cameraLastCodeRetuneAttemptAt = now;
-    console.warn('[Camera] relearning tune from visible code scene', {
-      needInitialLearn,
-      needCodeLearn,
-      needSceneRetune,
-      needDriftRetune,
-      needShiftRetune,
-      sceneStats,
-      reason: reason || 'code-visible-relearn',
-    });
-    return app.ensureCameraTunedForScan(reason || 'code-visible-relearn', { forceLearn: true });
-  };
-
-  app.noteCodeSceneVisible = function noteCodeSceneVisible(reason) {
-    Promise.resolve(app.maybeRetuneCameraFromCodeScene(reason)).catch((error) => {
-      console.warn('[Camera] code-scene retune failed:', error && error.message ? error.message : error);
-    });
   };
 
   function attachStream(stream) {
@@ -914,6 +574,8 @@
       state.cameraWatchdogId = 0;
     }
     state.cameraWatchdogRunning = false;
+    state.cameraTunePending = false;
+    state.cameraTunePromise = null;
     const stream = state.cameraStream || dom.video.srcObject;
     state.cameraStream = null;
     state.cameraReady = false;
@@ -934,7 +596,6 @@
     const stream = state.cameraStream || dom.video.srcObject;
     if (!stream || !hasLiveStream(stream)) {
       state.cameraReady = false;
-      state.cameraRetuneWanted = true;
       updateCameraMeta(null, 'no-live-stream');
       return false;
     }
@@ -947,17 +608,15 @@
     const track = getVideoTrack(stream);
     if (ok) {
       state.cameraMissCount = 0;
-      if (!isBenchCameraStream(stream) && !state.cameraTuneProfile && track) {
+      if (!isBenchCameraStream(stream) && track) {
         try {
-          await applyBootstrapTuneProfile(track, 'playback-bootstrap');
+          if (state.cameraTuneProfile) {
+            await reapplyTuneProfile(track, 'playback-reapply');
+          } else {
+            await applyFixedTuneProfile(track, 'playback-fixed');
+          }
         } catch (error) {
-          console.warn('[Camera] playback bootstrap tune failed:', error && error.message ? error.message : error);
-        }
-      }
-      if (state.scanning && !isBenchCameraStream(stream)) {
-        state.cameraRetuneWanted = true;
-        if (state.cameraTuneProfile) {
-          await app.ensureCameraTunedForScan('playback-reapply', { reuseOnly: true });
+          console.warn('[Camera] playback tune failed:', error && error.message ? error.message : error);
         }
       }
     }
@@ -999,17 +658,15 @@
 
         const ready = await waitForVideoReady(config.CAMERA_READY_TIMEOUT_MS);
         state.cameraReady = ready;
-        if (ready && track && !isBenchCameraStream(stream) && !state.cameraTuneProfile) {
+        if (ready && track && !isBenchCameraStream(stream)) {
           try {
-            await applyBootstrapTuneProfile(track, 'stream-bootstrap');
+            if (state.cameraTuneProfile) {
+              await reapplyTuneProfile(track, 'stream-reapply');
+            } else {
+              await applyFixedTuneProfile(track, 'stream-fixed');
+            }
           } catch (error) {
-            console.warn('[Camera] bootstrap tune failed:', error && error.message ? error.message : error);
-          }
-        }
-        if (ready && state.scanning && track && !isBenchCameraStream(stream)) {
-          state.cameraRetuneWanted = true;
-          if (state.cameraTuneProfile) {
-            await app.ensureCameraTunedForScan('stream-reapply', { reuseOnly: true });
+            console.warn('[Camera] stream tune failed:', error && error.message ? error.message : error);
           }
         }
         updateCameraMeta(track, ready ? 'first-frame-ok' : 'first-frame-timeout');
@@ -1061,7 +718,6 @@
         }
         const track = getVideoTrack(stream);
         if (!track || track.readyState === 'ended') {
-          state.cameraRetuneWanted = true;
           await app.startCamera(true);
           return;
         }
@@ -1080,41 +736,10 @@
         if (healthy) {
           markVideoFrameProgress();
           state.cameraMissCount = 0;
-          const recheckMs = Math.max(400, Number(config.CAMERA_TUNE_RECHECK_MS) || 1200);
-          const cooldownMs = Math.max(300, Number(config.CAMERA_TUNE_REAPPLY_COOLDOWN_MS) || 900);
-          if (state.scanning && !state.cameraTunePending && !state.cameraTunePromise
-              && (now - state.cameraLastTuneCheckAt) >= recheckMs) {
-            state.cameraLastTuneCheckAt = now;
-            const sceneStats = sampleTuneSceneStats(dom.video);
-            state.cameraSceneStats = sceneStats;
-            const sceneUsable = isTuneSceneUsable(sceneStats);
-            const codeFresh = hasRecentCodeSeen(now);
-            const profile = state.cameraTuneProfile;
-            const drifted = !!(profile && tuneProfileLooksDrifted(track, profile));
-            const sceneShifted = !!(profile && profile.scene && sceneStats && sceneStatsChanged(sceneStats, profile.scene));
-
-            if (!sceneUsable) {
-              state.cameraRetuneWanted = true;
-              return;
-            }
-
-            const canRetuneNow = (now - state.cameraLastTuneAt) >= cooldownMs;
-            const needInitialLearn = !profile;
-            const needCodeLearn = !!(profile && !profile.hadCode && codeFresh);
-            const needSceneRetune = !!(codeFresh && state.cameraRetuneWanted);
-            const needDriftRetune = !!(codeFresh && drifted);
-            const needShiftRetune = !!(codeFresh && sceneShifted);
-
-            if (canRetuneNow && (needInitialLearn || needCodeLearn || needSceneRetune || needDriftRetune || needShiftRetune)) {
-              console.warn('[Camera] learning tune from current scene', { needInitialLearn, needCodeLearn, needSceneRetune, needDriftRetune, needShiftRetune, codeFresh, sceneStats });
-              await app.ensureCameraTunedForScan('watchdog-relearn', { forceLearn: true });
-            }
-          }
           return;
         }
 
         state.cameraMissCount++;
-        state.cameraRetuneWanted = true;
         safePlayVideo();
         const recovered = await app.ensureCameraPlayback(config.CAMERA_RECOVER_RETRY_MS);
         if (recovered) {

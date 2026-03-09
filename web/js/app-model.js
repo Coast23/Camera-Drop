@@ -22,12 +22,12 @@
       return;
     }
 
-    ui.setMsg('摄像头已就绪，正在锁定参数...');
+    ui.setMsg('摄像头已就绪，正在锁定固定参数...');
     ui.setProg(0.84);
-    ui.setStatus('锁定相机参数');
+    ui.setStatus('锁定固定相机参数');
     if (typeof app.ensureCameraTunedForScan === 'function') {
       try {
-        await app.ensureCameraTunedForScan('scan-start', { forceLearn: true });
+        await app.ensureCameraTunedForScan('scan-start');
       } catch (error) {
         console.warn('[Camera] ensureCameraTunedForScan failed:', error && error.message ? error.message : error);
         ui.setStatus('相机参数锁定失败，继续启动');
