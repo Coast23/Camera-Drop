@@ -10,6 +10,7 @@ extern "C" {
 #include <vector>
 #include <memory>
 #include <stdexcept>
+#include <unordered_map>
 
 // 确保 wirehair_init 全局只被调用一次
 inline void wirehair_init_once(){
@@ -101,6 +102,8 @@ public:
 
     // 添加新接收的数据块，返回是否成功
     bool add_block(const DataPacket& packet){
+        if(is_complete_) return Wirehair_Success;
+
         const FountainMetadata& meta = packet.metadata();
         if(!init_){
             file_size_ = meta.file_size;
@@ -119,6 +122,9 @@ public:
             packet.data().data(),
             packet.data().size()
         );
+
+        if(block_feeded_.count(meta.block_id)) return false;
+        block_feeded_[meta.block_id] = true;
         
         if(result == Wirehair_Success) is_complete_ = true;
 
@@ -154,4 +160,5 @@ private:
     uint32_t original_size_;
     bool init_;
     bool is_complete_;
+    std::unordered_map<uint32_t, bool> block_feeded_;
 };

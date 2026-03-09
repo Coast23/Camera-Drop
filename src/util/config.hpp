@@ -107,8 +107,6 @@ public:
         uint32_t M_min = (min_payload + RS_DATA_SIZE - 1) / RS_DATA_SIZE;
         if(M_min == 0) M_min = 1;
 
-       // M_min *= 1.20; // 防止乘上 Redundancy factor 后超过 64000 
-
         // 找一个 >= M_min 且能整除 RS_BLOCKS_PER_FRAME 的 M 即可
         uint32_t best_M = M_min;
         for(uint32_t m = M_min; m <= RS_BLOCKS_PER_FRAME; ++m){
@@ -117,7 +115,6 @@ public:
             }
         }
         RS_BLOCKS_PER_FOUNTAIN_CHUNK = best_M;
-      //  RS_BLOCKS_PER_FOUNTAIN_CHUNK = 25;
         
         // 计算各个容量
         FOUNTAIN_PAYLOAD_SIZE = RS_BLOCKS_PER_FOUNTAIN_CHUNK * RS_DATA_SIZE;
@@ -129,14 +126,24 @@ public:
         double P_fm = std::pow(P_rs, RS_BLOCKS_PER_FOUNTAIN_CHUNK);
         REDUNDANCY_FACTOR = static_cast<float>(1.05 / P_fm);
         
-        show_config();
+        show_config(acc);
     }
 
-    static void show_config(){
+    static void show_config(const double acc){
+
+        uint32_t effective_bytes_per_frame = FOUNTAIN_CHUNK_SIZE * FOUNTAIN_PACKETS_PER_FRAME;
+        double efficiency = (double)effective_bytes_per_frame / PACKET_CAPACITY * 100.0;
+        double actual_max_mb = (64000.0 * FOUNTAIN_CHUNK_SIZE) / (1024.0 * 1024.0);
+
+        printf("---------------------------------------\n");
+        printf("Target Accuracy: %.2f%%\n", acc * 100.0);
         printf("RS Config: N = %u, K = %u, P = %u\n", RS_BLOCK_SIZE, RS_DATA_SIZE, RS_PARITY_SIZE);
         printf("Fountain:  M = %u blocks/chunk, %u chunks/frame\n", RS_BLOCKS_PER_FOUNTAIN_CHUNK, FOUNTAIN_PACKETS_PER_FRAME);
-        printf("Auto Redundancy factor: %.3f\n", REDUNDANCY_FACTOR);
-        printf("-------------------------------\n");
+        printf("Redundancy factor: %.3f\n", REDUNDANCY_FACTOR);
+        printf("Frame Capacity: %u bytes\n", PACKET_CAPACITY);
+        printf("Effective Data: %u bytes/frame (%.2f%%)\n", effective_bytes_per_frame, efficiency);
+        printf("Max File Size : %.2f MB\n", actual_max_mb);
+        printf("---------------------------------------\n");
     }
 };
 

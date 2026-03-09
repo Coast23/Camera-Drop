@@ -71,7 +71,7 @@ int main(){
     Config::auto_config(0.95);
     puts("getting encoder...");
 
-    auto data = generate_data(1024 * 1024 * 10); // 190 MB
+    auto data = generate_data(1024 * 1024 * 10); // 10 MB
   //  std::string str = "hello world.";
   //  std::vector<uint8_t> data(str.begin(), str.end());
 
@@ -87,7 +87,7 @@ int main(){
 
     puts("Ready to send.");
 
-    VideoChannel channel(0.0, 0.05);
+    VideoChannel channel(0.02, 0.05);
 
   //  const uint32_t packet_count = encoder.packet_count_recommended();
     const uint32_t packet_count = std::max(encoder.packet_count_recommended(), 10u);
@@ -131,7 +131,7 @@ int main(){
         }
     }*/
     for(auto& frame_data : recieved){
-        decoder.process_packet(frame_data); 
+        decoder.process_packet(frame_data);
         ++cnt;
         if(decoder.is_complete()){
             puts("Decode complete!");
