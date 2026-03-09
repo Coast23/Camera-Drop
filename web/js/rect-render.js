@@ -1,7 +1,9 @@
-﻿(function (global) {
+(function (global) {
+  'use strict';
+
   const api = global.CamDropRectRender = global.CamDropRectRender || {};
 
-  const PATTERNS = [
+  const BUILTIN_PATTERNS = [
     72909780498219007n,
     18410503204342530817n,
     9277662557957324543n,
@@ -19,6 +21,8 @@
     18138078526599232n,
     1099511627775n,
   ];
+  const PATTERN_COUNT = 16;
+  const TILE_SIZE = 8;
 
   const COLORS = [
     'rgb(255,255,0)',
@@ -26,6 +30,160 @@
     'rgb(255,0,255)',
     'rgb(0,255,255)',
   ];
+
+  let patterns = BUILTIN_PATTERNS.slice(0);
+  let patternSource = 'builtin';
+  let patternDict = null;
+  let patternPromise = null;
+  let patternCacheKey = '';
+  let readCanvas = null;
+  let readCtx = null;
+
+  function assetVersion() {
+    if (typeof global.__CAMDROP_ASSET_VERSION === 'string' && global.__CAMDROP_ASSET_VERSION) {
+      return global.__CAMDROP_ASSET_VERSION;
+    }
+    return '';
+  }
+
+  function withAssetVersion(url) {
+    const version = assetVersion();
+    if (!version) {
+      return url;
+    }
+    return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'v=' + encodeURIComponent(version);
+  }
+
+  function getPatternBase() {
+    if (typeof global.__CAMDROP_RECT_PATTERN_BASE === 'string' && global.__CAMDROP_RECT_PATTERN_BASE) {
+      return global.__CAMDROP_RECT_PATTERN_BASE.replace(/\/$/, '');
+    }
+    return typeof document === 'undefined' ? '../best_v2' : './best_v2';
+  }
+
+  function getPatternCacheKey() {
+    return getPatternBase() + '|' + assetVersion();
+  }
+
+  function ensureReadContext() {
+    if (readCtx) {
+      return readCtx;
+    }
+    if (typeof OffscreenCanvas !== 'undefined') {
+      readCanvas = new OffscreenCanvas(TILE_SIZE, TILE_SIZE);
+    } else {
+      readCanvas = document.createElement('canvas');
+      readCanvas.width = TILE_SIZE;
+      readCanvas.height = TILE_SIZE;
+    }
+    readCtx = readCanvas.getContext('2d', { willReadFrequently: true });
+    return readCtx;
+  }
+
+  async function loadBitmap(url) {
+    if (typeof fetch === 'function' && typeof createImageBitmap === 'function') {
+      const response = await fetch(url, { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error('failed to load ' + url + ': ' + response.status);
+      }
+      const blob = await response.blob();
+      return await createImageBitmap(blob);
+    }
+
+    if (typeof document !== 'undefined') {
+      return await new Promise(function (resolve, reject) {
+        const img = new Image();
+        img.onload = function () { resolve(img); };
+        img.onerror = function () { reject(new Error('failed to load ' + url)); };
+        img.src = url;
+      });
+    }
+
+    throw new Error('pattern image loading is unavailable');
+  }
+
+  function closeBitmap(bitmap) {
+    if (bitmap && typeof bitmap.close === 'function') {
+      try {
+        bitmap.close();
+      } catch (_) {}
+    }
+  }
+
+  async function loadPatternMask(url) {
+    const bitmap = await loadBitmap(url);
+    try {
+      const ctx = ensureReadContext();
+      ctx.clearRect(0, 0, TILE_SIZE, TILE_SIZE);
+      ctx.drawImage(bitmap, 0, 0, TILE_SIZE, TILE_SIZE);
+      const data = ctx.getImageData(0, 0, TILE_SIZE, TILE_SIZE).data;
+      let mask = 0n;
+      for (let i = 0; i < TILE_SIZE * TILE_SIZE; i++) {
+        const gray = (data[i * 4] * 77 + data[i * 4 + 1] * 150 + data[i * 4 + 2] * 29) >> 8;
+        if (gray >= 128) {
+          mask |= (1n << BigInt(i));
+        }
+      }
+      return mask;
+    } finally {
+      closeBitmap(bitmap);
+    }
+  }
+
+  function maskToWords(mask) {
+    const value = typeof mask === 'bigint' ? mask : BigInt(mask || 0);
+    return {
+      lo: Number(value & 0xffffffffn) >>> 0,
+      hi: Number((value >> 32n) & 0xffffffffn) >>> 0,
+    };
+  }
+
+  function rebuildPatternDict() {
+    const lo = new Uint32Array(patterns.length);
+    const hi = new Uint32Array(patterns.length);
+    for (let i = 0; i < patterns.length; i++) {
+      const words = maskToWords(patterns[i]);
+      lo[i] = words.lo;
+      hi[i] = words.hi;
+    }
+    patternDict = {
+      lo,
+      hi,
+      key: Array.from(lo).join(',') + '|' + Array.from(hi).join(','),
+      source: patternSource,
+    };
+    api.PATTERNS = patterns.slice(0);
+  }
+
+  async function ensurePatterns() {
+    const nextKey = getPatternCacheKey();
+    if (patternPromise && patternCacheKey === nextKey) {
+      return patternPromise;
+    }
+
+    patternCacheKey = nextKey;
+    patternPromise = (async function () {
+      const base = getPatternBase();
+      try {
+        const loaded = await Promise.all(
+          Array.from({ length: PATTERN_COUNT }, function (_, i) {
+            const name = i.toString(16).padStart(2, '0');
+            return loadPatternMask(withAssetVersion(base + '/' + name + '.png'));
+          })
+        );
+        patterns = loaded.slice(0);
+        patternSource = base;
+      } catch (error) {
+        console.warn('[RectRender] pattern load fallback to builtin:', error && error.message ? error.message : error);
+        patterns = BUILTIN_PATTERNS.slice(0);
+        patternSource = 'builtin';
+      }
+      rebuildPatternDict();
+      return api.PATTERNS;
+    })();
+
+    return patternPromise;
+  }
 
   function isReservedCell(layout, r, c) {
     const side = layout && Number.isFinite(layout.reservedCornerSide) ? layout.reservedCornerSide : 6;
@@ -91,7 +249,7 @@
   function drawCell(ctx, layout, scale, row, col, value) {
     const patternIdx = value & 0x0f;
     const colorIdx = (value >> 4) & 0x03;
-    const mask = PATTERNS[patternIdx];
+    const mask = patterns[patternIdx];
     const x = (layout.margin + col * layout.stride) * scale;
     const y = (layout.margin + row * layout.stride) * scale;
     ctx.fillStyle = COLORS[colorIdx];
@@ -105,9 +263,24 @@
     }
   }
 
-  api.PATTERNS = PATTERNS.slice(0);
+  rebuildPatternDict();
+
+  api.PATTERNS = patterns.slice(0);
   api.COLORS = COLORS.slice(0);
   api.isReservedCell = isReservedCell;
+  api.ensurePatterns = ensurePatterns;
+  api.getPatternSource = function getPatternSource() {
+    return patternSource;
+  };
+  api.getPatternDict = async function getPatternDict() {
+    await ensurePatterns();
+    return {
+      lo: new Uint32Array(patternDict.lo),
+      hi: new Uint32Array(patternDict.hi),
+      key: patternDict.key,
+      source: patternDict.source,
+    };
+  };
 
   function cooperativeYield() {
     if (global.scheduler && typeof global.scheduler.yield === 'function') {
@@ -121,6 +294,7 @@
   api.renderUnitsToCanvas = async function renderUnitsToCanvas(canvas, units, options) {
     const cfg = options || {};
     const layout = await global.CamDropRectCodec.getLayout();
+    await ensurePatterns();
     const scale = Math.max(1, cfg.scale || 1);
     const data = units instanceof Uint8Array ? units : new Uint8Array(units || 0);
     const useCooperativeYield = cfg.cooperativeYield === true;

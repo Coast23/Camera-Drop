@@ -503,7 +503,14 @@
     return { lo, hi };
   }
 
-  function buildPatternDict() {
+  async function buildPatternDict() {
+    if (global.CamDropRectRender && typeof global.CamDropRectRender.getPatternDict === 'function') {
+      const externalDict = await global.CamDropRectRender.getPatternDict();
+      if (externalDict && externalDict.lo && externalDict.hi
+          && externalDict.lo.length === 16 && externalDict.hi.length === 16) {
+        return externalDict;
+      }
+    }
     const patterns = global.CamDropRectRender && Array.isArray(global.CamDropRectRender.PATTERNS)
       ? global.CamDropRectRender.PATTERNS
       : null;
@@ -517,7 +524,12 @@
       lo[i] = words.lo;
       hi[i] = words.hi;
     }
-    return { lo, hi, key: Array.from(lo).join(',') + '|' + Array.from(hi).join(',') };
+    return {
+      lo,
+      hi,
+      key: Array.from(lo).join(',') + '|' + Array.from(hi).join(','),
+      source: 'rect-render-builtin',
+    };
   }
 
   function layoutKeyOf(layout) {
@@ -624,7 +636,7 @@
   }
 
   async function ensureWorkers(layout) {
-    const dict = buildPatternDict();
+    const dict = await buildPatternDict();
     const nextLayoutKey = layoutKeyOf(layout);
     if (!state.workerSource) {
       state.workerSource = buildWorkerSource();
@@ -712,7 +724,7 @@
         state.workers.push(worker);
         worker.postMessage({
           type: 'init',
-          dictSource: 'rect-render',
+          dictSource: dict.source || 'rect-render',
           dictLo: Array.from(dict.lo),
           dictHi: Array.from(dict.hi),
           gridRows: layout.gridRows,
