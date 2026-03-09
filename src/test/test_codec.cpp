@@ -68,7 +68,7 @@ private:
 };
 
 int main(){
- //   Config::auto_config(0.95);
+    Config::auto_config(0.95);
     puts("getting encoder...");
 
     auto data = generate_data(1024 * 1024 * 10); // 190 MB
@@ -87,7 +87,7 @@ int main(){
 
     puts("Ready to send.");
 
-    VideoChannel channel(0.0, 0.01);
+    VideoChannel channel(0.0, 0.05);
 
   //  const uint32_t packet_count = encoder.packet_count_recommended();
     const uint32_t packet_count = std::max(encoder.packet_count_recommended(), 10u);
