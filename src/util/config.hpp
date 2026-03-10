@@ -11,12 +11,46 @@ public:
     static const int IMG_HEIGHT = 1024;
     static const int STRIDE     = 9;
     static const int MARGIN     = 8;
+    static const int TILE_SIZE  = 8;
 
     static constexpr int GRID_R = (IMG_HEIGHT - MARGIN * 2) / STRIDE;
     static constexpr int GRID_C = (IMG_WIDTH - MARGIN * 2)  / STRIDE;
 
-    static const uint32_t BITS_PER_UNIT = 6;                      // 每个图案单元能编码的位数 
-    static constexpr uint32_t UINTS_COUNT = GRID_R * GRID_C - 4 * 6 * 6;  // 一帧的图案单元数
+    // 锚点与布局保留区配置
+    static const int ANCHOR_OUT_START = 2;
+    static const int ANCHOR_L1_SIZE   = 56;
+    static const int ANCHOR_L2_INSET  = 7;
+    static const int ANCHOR_L2_SIZE   = 42;
+    static const int ANCHOR_L3_INSET  = 14;
+    static const int ANCHOR_L3_SIZE   = 28;
+    static const int ANCHOR_L4_INSET  = 21;
+    static const int ANCHOR_L4_SIZE   = 14;
+
+    static const int ANCHOR_RESERVED_CELLS = 6;
+    static const int CALIB_ROW = 0;
+    static const int CALIB_COL_BEGIN = 6;
+    static const int CALIB_COL_END   = 14;
+    static const int HEADER_ROW = 0;
+    static const int HEADER_COL_BEGIN = 14;
+    static const int HEADER_COL_END   = 46;
+
+    static constexpr int RIGHT_INNER_COL  = GRID_C - ANCHOR_RESERVED_CELLS - 1;
+    static constexpr int BOTTOM_INNER_ROW = GRID_R - ANCHOR_RESERVED_CELLS - 1;
+
+    static constexpr uint32_t RESERVED_SYMBOL_COUNT =
+        4 * ANCHOR_RESERVED_CELLS * ANCHOR_RESERVED_CELLS;
+    static constexpr uint32_t CALIB_SYMBOL_COUNT =
+        static_cast<uint32_t>(CALIB_COL_END - CALIB_COL_BEGIN);
+    static constexpr uint32_t HEADER_SYMBOL_COUNT =
+        static_cast<uint32_t>(HEADER_COL_END - HEADER_COL_BEGIN);
+    static constexpr uint32_t FRAME_SYMBOL_COUNT_WITH_CALIB =
+        GRID_R * GRID_C - RESERVED_SYMBOL_COUNT;
+    static constexpr uint32_t PAYLOAD_SYMBOL_COUNT =
+        FRAME_SYMBOL_COUNT_WITH_CALIB - CALIB_SYMBOL_COUNT - HEADER_SYMBOL_COUNT;
+
+    static const uint32_t BITS_PER_UNIT = 6;                      // 每个图案单元能编码的位数
+    static constexpr uint32_t UINTS_COUNT = FRAME_SYMBOL_COUNT_WITH_CALIB
+                                          - CALIB_SYMBOL_COUNT;  // 一帧真实承载的数据单元数（header + payload）
     static constexpr uint32_t UNITS_PER_BYTE =                    // 每个字节能编码多少图案单元
                                         8 / BITS_PER_UNIT;
     static constexpr uint32_t PACKET_CAPACITY =                   // 数据包容量（字节）

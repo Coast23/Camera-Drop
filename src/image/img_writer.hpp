@@ -10,6 +10,10 @@
 #include <vector>
 #include <cstdint>
 
+inline bool is_calibration_cell(int r, int c){
+    return r == Config::CALIB_ROW && c >= Config::CALIB_COL_BEGIN && c < Config::CALIB_COL_END;
+}
+
 void write_6bits_data(cv::Mat& img, uint8_t* data, size_t size){
     if(size != Config::UINTS_COUNT) return; // TODO: throw an exception
 
@@ -22,6 +26,12 @@ void write_6bits_data(cv::Mat& img, uint8_t* data, size_t size){
     for(int r = 0; r < Config::GRID_R; ++r){
         for(int c = 0; c < Config::GRID_C; ++c){
             if(Painter::is_reserved(r, c)) continue;
+            if(is_calibration_cell(r, c)){
+                const uint8_t color_idx = static_cast<uint8_t>((c - Config::CALIB_COL_BEGIN) & 0x3);
+                const uint8_t symbol = static_cast<uint8_t>((color_idx << P_BITS) | 0);
+                painter.draw_tile(symbol, r, c);
+                continue;
+            }
             painter.draw_tile(data[id++], r, c);
         }
     }

@@ -2,7 +2,7 @@
 // Camera-Drop-old 定位 + 透视矫正（ORT + Canny 版）
 //
 // 模型：YOLO26，ONNX（post-NMS）
-// output0: [1, 300, 38]  每行 = [x1,y1,x2,y2, score, cls_id, mask_coeff×32]（letterbox坐标）
+// output0: [1, N, feat]  每行至少包含 [x1,y1,x2,y2, score, cls_id]（letterbox 坐标）
 //
 // 类别（nc=5）：
 //   0: camera_drop_frame
@@ -31,7 +31,7 @@
 // 常量
 // ─────────────────────────────────────────────────────────────────
 static const int   YOLO_INPUT  = 640;
-static const int   FEAT_DIM    = 38;   // 4+1+1+32（post-NMS seg，只用前 6 列）
+static const int   FEAT_DIM_MIN = 6;
 static const float CONF_THRESH = 0.35f;
 
 static const int CLS_FRAME     = 0;
@@ -80,12 +80,13 @@ static cv::Point2f lb_to_orig(float lx, float ly, const LetterboxInfo& lb) {
 // 解析 output0 post-NMS
 // ─────────────────────────────────────────────────────────────────
 static std::vector<Detection> parse_output(
-    const float* data, int n_dets,
+    const float* data, int n_dets, int feat_dim,
     const LetterboxInfo& lb, float conf_thresh)
 {
+    if (feat_dim < FEAT_DIM_MIN) return {};
     std::vector<Detection> dets;
     for (int i = 0; i < n_dets; ++i) {
-        const float* row = data + i * FEAT_DIM;
+        const float* row = data + i * feat_dim;
         float score = row[4];
         int   cls   = (int)row[5];
         if (score < conf_thresh) continue;
@@ -131,9 +132,10 @@ static std::vector<Detection> run_inference(
 
     auto shape0 = outputs[0].GetTensorTypeAndShapeInfo().GetShape();
     int n_dets  = (int)shape0[1];
+    int feat_dim = (int)shape0[2];
     const float* data0 = outputs[0].GetTensorData<float>();
 
-    return parse_output(data0, n_dets, lb, conf_thresh);
+    return parse_output(data0, n_dets, feat_dim, lb, conf_thresh);
 }
 
 // ─────────────────────────────────────────────────────────────────
