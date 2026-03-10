@@ -1,0 +1,147 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish as GitHub Release'
+        type: boolean
+        default: false
+        required: false
+      version:
+        description: 'Release version tag (e.g. v1.2.0), required when publishing'
+        type: string
+        default: ''
+        required: false
+      release_name:
+        description: 'Release title (defaults to version tag)'
+        type: string
+        default: ''
+        required: false
+
+env:
+  OPENCV_VERSION: '4.10.0'
+  ORT_VERSION:    '1.20.1'
+
+jobs:
+  build:
+    name: Build encoder & decoder (Windows / MSVC)
+    runs-on: windows-latest
+
+    steps:
+      # ── 发布前校验 ────────────────────────────────────────────────
+      - name: Validate release inputs
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true'
+        shell: pwsh
+        run: |
+          if (-not '${{ inputs.version }}') {
+            Write-Error 'version is required when publish_release is true'
+            exit 1
+          }
+
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # ── OpenCV ────────────────────────────────────────────────────
+      - name: Cache OpenCV
+        id: cache-opencv
+        uses: actions/cache@v4
+        with:
+          path: C:\opencv
+          key: opencv-${{ env.OPENCV_VERSION }}-vc17-x64
+
+      - name: Download & extract OpenCV
+        if: steps.cache-opencv.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/opencv/opencv/releases/download/${{ env.OPENCV_VERSION }}/opencv-${{ env.OPENCV_VERSION }}-windows.exe"
+          Invoke-WebRequest -Uri $url -OutFile opencv-installer.exe -UseBasicParsing
+          & "C:\Program Files\7-Zip\7z.exe" x opencv-installer.exe -oC:\ -y | Out-Null
+
+      # ── ONNX Runtime ──────────────────────────────────────────────
+      - name: Cache ONNX Runtime
+        id: cache-ort
+        uses: actions/cache@v4
+        with:
+          path: C:\onnxruntime
+          key: onnxruntime-${{ env.ORT_VERSION }}-win-x64
+
+      - name: Download & extract ONNX Runtime
+        if: steps.cache-ort.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $pkg = "onnxruntime-win-x64-${{ env.ORT_VERSION }}"
+          $url = "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/$pkg.zip"
+          Invoke-WebRequest -Uri $url -OutFile ort.zip -UseBasicParsing
+          Expand-Archive ort.zip -DestinationPath C:\
+          Rename-Item "C:\$pkg" C:\onnxruntime
+
+      # ── Build ─────────────────────────────────────────────────────
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          cmake -B build -S . `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DOpenCV_DIR="C:\opencv\build" `
+            -DONNXRUNTIME_ROOT="C:\onnxruntime" `
+            -DCAMDROP_BUILD_VISION=ON `
+            -DCAMDROP_BUILD_ORT_PIPELINE=ON `
+            -DCAMDROP_BUILD_MISC_TOOLS=OFF
+
+      - name: Build encoder & decoder
+        shell: pwsh
+        run: |
+          cmake --build build --config Release `
+            --target file_video_encoder file_video_decoder `
+            --parallel
+
+      # ── 打包产物 ──────────────────────────────────────────────────
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $dist = "dist"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+
+          # 可执行文件
+          Copy-Item "build\Release\file_video_encoder.exe" $dist
+          Copy-Item "build\Release\file_video_decoder.exe" $dist
+
+          # ONNX Runtime DLL（解码器依赖）
+          Copy-Item "C:\onnxruntime\bin\onnxruntime.dll" $dist
+
+          # OpenCV Release DLL（排除 debug 版 *d.dll）
+          $ocvDll = Get-ChildItem "C:\opencv\build\x64\vc17\bin" -Filter "opencv_world*.dll" |
+                    Where-Object { $_.Name -notmatch 'd\.dll$' } |
+                    Select-Object -First 1
+          if (-not $ocvDll) {
+            throw "OpenCV release DLL not found under C:\opencv\build\x64\vc17\bin"
+          }
+          Copy-Item $ocvDll.FullName $dist
+          Write-Host "Bundled: $($ocvDll.Name)"
+
+          Compress-Archive -Path "$dist\*" -DestinationPath camera-drop-tools.zip
+          Write-Host "Package contents:"
+          Get-ChildItem $dist | Select-Object Name, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: camera-drop-tools
+          path: camera-drop-tools.zip
+          retention-days: 30
+
+      # ── 发布至 Release（仅手动触发且勾选发布时执行）─────────────
+      - name: Create GitHub Release
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.release_name || inputs.version }}
+          files: camera-drop-tools.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

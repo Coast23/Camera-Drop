@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+env:
+  OPENCV_VERSION: '4.10.0'
+  ORT_VERSION:    '1.20.1'
+
+jobs:
+  build:
+    name: Build all targets (Windows / MSVC)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # ── OpenCV ────────────────────────────────────────────────────
+      - name: Cache OpenCV
+        id: cache-opencv
+        uses: actions/cache@v4
+        with:
+          path: C:\opencv
+          key: opencv-${{ env.OPENCV_VERSION }}-vc17-x64
+
+      - name: Download & extract OpenCV
+        if: steps.cache-opencv.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/opencv/opencv/releases/download/${{ env.OPENCV_VERSION }}/opencv-${{ env.OPENCV_VERSION }}-windows.exe"
+          Invoke-WebRequest -Uri $url -OutFile opencv-installer.exe -UseBasicParsing
+          & "C:\Program Files\7-Zip\7z.exe" x opencv-installer.exe -oC:\ -y | Out-Null
+
+      # ── ONNX Runtime ──────────────────────────────────────────────
+      - name: Cache ONNX Runtime
+        id: cache-ort
+        uses: actions/cache@v4
+        with:
+          path: C:\onnxruntime
+          key: onnxruntime-${{ env.ORT_VERSION }}-win-x64
+
+      - name: Download & extract ONNX Runtime
+        if: steps.cache-ort.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $pkg = "onnxruntime-win-x64-${{ env.ORT_VERSION }}"
+          $url = "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/$pkg.zip"
+          Invoke-WebRequest -Uri $url -OutFile ort.zip -UseBasicParsing
+          Expand-Archive ort.zip -DestinationPath C:\
+          Rename-Item "C:\$pkg" C:\onnxruntime
+
+      # ── Build ─────────────────────────────────────────────────────
+      - name: Configure CMake (all targets)
+        shell: pwsh
+        run: |
+          cmake -B build -S . `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DOpenCV_DIR="C:\opencv\build" `
+            -DONNXRUNTIME_ROOT="C:\onnxruntime" `
+            -DCAMDROP_BUILD_VISION=ON `
+            -DCAMDROP_BUILD_ORT_PIPELINE=ON `
+            -DCAMDROP_BUILD_MISC_TOOLS=ON
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release --parallel
