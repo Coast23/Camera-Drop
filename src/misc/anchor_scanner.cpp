@@ -306,8 +306,12 @@ int main(int argc, char** argv) {
     Ort::SessionOptions opts;
     opts.SetIntraOpNumThreads(4);
     opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+#ifdef _WIN32
     std::wstring wmodel(model_path.begin(), model_path.end());
     Ort::Session session(env, wmodel.c_str(), opts);
+#else
+    Ort::Session session(env, model_path.c_str(), opts);
+#endif
 
     cv::Mat vis = img.clone();
 
