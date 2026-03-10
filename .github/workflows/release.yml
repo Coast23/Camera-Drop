@@ -110,8 +110,12 @@ jobs:
           Copy-Item "build\Release\file_video_encoder.exe" $dist
           Copy-Item "build\Release\file_video_decoder.exe" $dist
 
-          # ONNX Runtime DLL（解码器依赖）
-          Copy-Item "C:\onnxruntime\bin\onnxruntime.dll" $dist
+          # ONNX Runtime DLL（解码器依赖，不同版本可能在 bin/ 或 lib/ 下）
+          $ortDll = Get-ChildItem "C:\onnxruntime" -Filter "onnxruntime.dll" -Recurse |
+                    Select-Object -First 1
+          if (-not $ortDll) { throw "onnxruntime.dll not found under C:\onnxruntime" }
+          Copy-Item $ortDll.FullName $dist
+          Write-Host "Bundled ORT: $($ortDll.FullName)"
 
           # OpenCV Release DLL（排除 debug 版 *d.dll）
           $ocvDll = Get-ChildItem "C:\opencv\build\x64\vc17\bin" -Filter "opencv_world*.dll" |
