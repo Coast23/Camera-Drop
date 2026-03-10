@@ -8,6 +8,13 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#  include <string.h>   // _stricmp
+#else
+#  include <strings.h>  // strcasecmp
+#  define _stricmp strcasecmp
+#endif
+
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
