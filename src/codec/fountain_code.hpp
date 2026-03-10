@@ -88,6 +88,15 @@ private:
 
 class FountainDecoder {
 public:
+    enum class AddBlockResult {
+        NeedMore,
+        Complete,
+        Duplicate,
+        FileMismatch,
+        InitFailed,
+        DecodeError,
+    };
+
     FountainDecoder()
         : codec_(nullptr), file_size_(0), original_size_(0), init_(false), is_complete_(false) {
             wirehair_init_once();
@@ -100,9 +109,9 @@ public:
     FountainDecoder(const FountainDecoder&) = delete;
     FountainDecoder& operator = (const FountainDecoder&) = delete;
 
-    // 添加新接收的数据块，返回是否成功
-    bool add_block(const DataPacket& packet){
-        if(is_complete_) return Wirehair_Success;
+    // 添加新接收的数据块，返回详细结果
+    AddBlockResult add_block_ex(const DataPacket& packet){
+        if(is_complete_) return AddBlockResult::Complete;
 
         const FountainMetadata& meta = packet.metadata();
         if(!init_){
@@ -110,25 +119,36 @@ public:
             original_size_ = meta.original_size;
             codec_ = wirehair_decoder_create(
                 nullptr, file_size_, Config::FOUNTAIN_CHUNK_SIZE);
-            if(!codec_) return false; // Oops!
+            if(!codec_) return AddBlockResult::InitFailed;
             init_ = true;
         }
 
-        if(meta.file_size != file_size_) return false; // Oops!
-    
+        if(meta.file_size != file_size_ || meta.original_size != original_size_) return AddBlockResult::FileMismatch;
+        if(block_feeded_.count(meta.block_id)) return AddBlockResult::Duplicate;
+
         WirehairResult result = wirehair_decode(
             codec_,
             meta.block_id,
             packet.data().data(),
             packet.data().size()
         );
-
-        if(block_feeded_.count(meta.block_id)) return false;
         block_feeded_[meta.block_id] = true;
-        
-        if(result == Wirehair_Success) is_complete_ = true;
 
-        return result == Wirehair_Success || result == Wirehair_NeedMore;
+        if(result == Wirehair_Success) {
+            is_complete_ = true;
+            return AddBlockResult::Complete;
+        }
+        if(result == Wirehair_NeedMore) {
+            return AddBlockResult::NeedMore;
+        }
+        block_feeded_.erase(meta.block_id);
+        return AddBlockResult::DecodeError;
+    }
+
+    // 添加新接收的数据块，返回是否成功（向后兼容）
+    bool add_block(const DataPacket& packet){
+        const AddBlockResult result = add_block_ex(packet);
+        return result == AddBlockResult::NeedMore || result == AddBlockResult::Complete;
     }
 
     // 判断是否已经接收到足够的块并完成解码
