@@ -152,6 +152,20 @@ function(camdrop_copy_onnxruntime_dll target_name)
     endif()
 endfunction()
 
+function(camdrop_copy_opencv_dll target_name)
+    if(WIN32 AND NOT MINGW)
+        # CMake 3.21+ 支持 TARGET_RUNTIME_DLLS，自动收集所有运行时 DLL
+        if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.21")
+            add_custom_command(TARGET ${target_name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    $<TARGET_RUNTIME_DLLS:${target_name}>
+                    $<TARGET_FILE_DIR:${target_name}>
+                COMMAND_EXPAND_LISTS
+            )
+        endif()
+    endif()
+endfunction()
+
 add_library(camdrop_core INTERFACE)
 target_include_directories(camdrop_core
     INTERFACE

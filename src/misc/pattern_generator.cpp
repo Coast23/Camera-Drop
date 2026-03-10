@@ -10,6 +10,12 @@
 #include <string>
 #include <cstdint>
 #include <iostream>
+#ifdef _MSC_VER
+#  include <intrin.h>
+static inline int portable_popcountll(unsigned long long x) { return static_cast<int>(__popcnt64(x)); }
+#else
+static inline int portable_popcountll(unsigned long long x) { return __builtin_popcountll(x); }
+#endif
 
 const int INF = 1145141919;
 const int NUM = 32;  // 图案数
@@ -34,7 +40,7 @@ int main(){
     };
 
     auto popcnt = [&](uint64_t x) -> int {
-        return __builtin_popcountll(x);
+        return portable_popcountll(x);
     };
 
     // 获取图案集的最小 Hamming Distance

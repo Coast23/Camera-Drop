@@ -110,22 +110,21 @@ jobs:
           Copy-Item "build\Release\file_video_encoder.exe" $dist
           Copy-Item "build\Release\file_video_decoder.exe" $dist
 
-          # ONNX Runtime DLL（解码器依赖，不同版本可能在 bin/ 或 lib/ 下）
-          $ortDll = Get-ChildItem "C:\onnxruntime" -Filter "onnxruntime.dll" -Recurse |
-                    Select-Object -First 1
-          if (-not $ortDll) { throw "onnxruntime.dll not found under C:\onnxruntime" }
-          Copy-Item $ortDll.FullName $dist
-          Write-Host "Bundled ORT: $($ortDll.FullName)"
-
-          # OpenCV Release DLL（排除 debug 版 *d.dll）
-          $ocvDll = Get-ChildItem "C:\opencv\build\x64\vc17\bin" -Filter "opencv_world*.dll" |
-                    Where-Object { $_.Name -notmatch 'd\.dll$' } |
-                    Select-Object -First 1
-          if (-not $ocvDll) {
-            throw "OpenCV release DLL not found under C:\opencv\build\x64\vc17\bin"
+          # CMake POST_BUILD 已将 onnxruntime.dll 以及（若 CMake>=3.21）opencv DLL 复制至此
+          Get-ChildItem "build\Release" -Filter "*.dll" | ForEach-Object {
+              Copy-Item $_.FullName $dist
+              Write-Host "Bundled from build: $($_.Name)"
           }
-          Copy-Item $ocvDll.FullName $dist
-          Write-Host "Bundled: $($ocvDll.Name)"
+
+          # 兜底：若 build\Release 中缺少 opencv_world*.dll，则递归搜索并补充
+          if (-not (Get-ChildItem $dist -Filter "opencv_world*.dll")) {
+              $ocvDll = Get-ChildItem "C:\opencv" -Filter "opencv_world*.dll" -Recurse |
+                        Where-Object { $_.Name -notmatch 'd\.dll$' } |
+                        Select-Object -First 1
+              if (-not $ocvDll) { throw "OpenCV release DLL not found" }
+              Copy-Item $ocvDll.FullName $dist
+              Write-Host "Bundled OpenCV (fallback): $($ocvDll.Name)"
+          }
 
           Compress-Archive -Path "$dist\*" -DestinationPath camera-drop-tools.zip
           Write-Host "Package contents:"

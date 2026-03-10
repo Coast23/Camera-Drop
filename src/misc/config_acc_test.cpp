@@ -12,6 +12,13 @@
 #include <cassert>
 #include <iostream>
 #include <opencv2/opencv.hpp>
+#ifdef _MSC_VER
+#  include <intrin.h>
+static inline int portable_popcountll(unsigned long long x) { return static_cast<int>(__popcnt64(x)); }
+#else
+static inline int portable_popcountll(unsigned long long x) { return __builtin_popcountll(x); }
+#endif
+constexpr int ct_log2(int x) { return x <= 1 ? 0 : 1 + ct_log2(x >> 1); }
 
 // 固定参数
 const int GRID_SIZE = 112;
@@ -55,7 +62,7 @@ std::vector<uint64_t> gen_dict() {
                 }
         return res;
     };
-    auto popcnt = [](uint64_t x) { return __builtin_popcountll(x); };
+    auto popcnt = [](uint64_t x) { return portable_popcountll(x); };
 
     auto get_dist = [&](std::vector<uint16_t>& pick) -> int {
         int res = INF;
@@ -135,8 +142,8 @@ int main(int argc, char** argv) {
 
     using namespace cv;
 
-    constexpr int P_BITS = std::__lg(NUM_PATTERNS);
-    constexpr int C_BITS = std::__lg(NUM_COLORS);
+    constexpr int P_BITS = ct_log2(NUM_PATTERNS);
+    constexpr int C_BITS = ct_log2(NUM_COLORS);
 
     // ── 颜色表 ───────────────────────────────────────────────────
     auto get_color = [&](int color_idx) -> Vec3b {
@@ -172,7 +179,7 @@ int main(int argc, char** argv) {
     auto match_pattern = [&](uint64_t mask) -> int {
         int best = 0, min_d = 65;
         for (int i = 0; i < (int)Dict.size(); ++i) {
-            int d = __builtin_popcountll(mask ^ Dict[i]);
+            int d = portable_popcountll(mask ^ Dict[i]);
             if (d < min_d) { min_d = d; best = i; }
         }
         return best;
