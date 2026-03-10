@@ -35,8 +35,7 @@ void print_usage() {
         << "Usage: frame_scanner <image>"
         << " [--model <onnx>]"
         << " [--patterns <dir>]"
-        << " [--deskew-out <png>]"
-        << " [--quad-refine]\n";
+        << " [--deskew-out <png>]\n";
 }
 
 }  // namespace
@@ -51,7 +50,6 @@ int main(int argc, char** argv) {
     std::string model_path = "web/model/best_dynamic.onnx";
     std::string pattern_dir = "web/pattern_sets/best_v2";
     std::string deskew_out;
-    bool quad_refine = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -61,8 +59,6 @@ int main(int argc, char** argv) {
             pattern_dir = argv[++i];
         } else if (arg == "--deskew-out" && i + 1 < argc) {
             deskew_out = argv[++i];
-        } else if (arg == "--quad-refine") {
-            quad_refine = true;
         } else if (!arg.empty() && arg[0] != '-' && image_path.empty()) {
             image_path = arg;
         } else {
@@ -90,7 +86,6 @@ int main(int argc, char** argv) {
         camdrop::vision::FramePipelineConfig cfg;
         cfg.model_path = model_path;
         cfg.pattern_dir = pattern_dir;
-        cfg.localizer_options.refine_anchor_quad = quad_refine;
 
         camdrop::vision::FramePipeline pipeline(cfg);
         const camdrop::vision::PipelineResult result = pipeline.Process(frame);

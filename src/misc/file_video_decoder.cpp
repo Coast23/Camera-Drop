@@ -33,7 +33,6 @@ struct Options {
     std::string dump_deskew_dir;
     double acc = 0.95;
     bool deskewed_input = false;
-    bool quad_refine = false;
     bool patch_track = true;
 };
 
@@ -110,7 +109,7 @@ void print_usage() {
     std::cout
         << "Usage: file_video_decoder --input <video-or-dir> [--output <file>] [--acc <0..1>]\n"
         << "                          [--model <onnx>] [--patterns <dir>] [--deskewed-input]\n"
-        << "                          [--quad-refine] [--dump-deskew <dir>] [--no-patch-track]\n";
+        << "                          [--dump-deskew <dir>] [--no-patch-track]\n";
 }
 
 Options parse_args(int argc, char** argv) {
@@ -131,8 +130,6 @@ Options parse_args(int argc, char** argv) {
             opts.acc = std::stod(argv[++i]);
         } else if (arg == "--deskewed-input") {
             opts.deskewed_input = true;
-        } else if (arg == "--quad-refine") {
-            opts.quad_refine = true;
         } else if (arg == "--no-patch-track") {
             opts.patch_track = false;
         } else {
@@ -233,7 +230,6 @@ int main(int argc, char** argv) {
             camdrop::vision::FramePipelineConfig cfg;
             cfg.model_path = opts.model_path;
             cfg.pattern_dir = opts.pattern_dir;
-            cfg.localizer_options.refine_anchor_quad = opts.quad_refine;
             cfg.patch_track_enabled = opts.patch_track;
             pipeline.emplace(cfg);
         }

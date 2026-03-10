@@ -16,7 +16,6 @@ struct YoloLocalizerOptions {
     float conf_threshold = 0.35f;
     float anchor_expand = 0.05f;
     int ort_threads = 1;
-    bool refine_anchor_quad = false;
     std::string input_name = "images";
     std::string output_name = "output0";
 };
