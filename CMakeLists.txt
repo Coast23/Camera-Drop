@@ -49,19 +49,25 @@ else()
     add_subdirectory(third_party/correct)
 endif()
 
+set(_opencv_via_pkgconfig FALSE)
+
 if(MINGW)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(OPENCV4 REQUIRED IMPORTED_TARGET opencv4)
-    set(OpenCV_FOUND TRUE)
-    set(OpenCV_INCLUDE_DIRS ${OPENCV4_INCLUDE_DIRS})
-    set(OpenCV_LIBRARY_DIRS ${OPENCV4_STATIC_LIBRARY_DIRS})
-    set(OpenCV_LIBS ${OPENCV4_STATIC_LIBRARIES})
+    find_package(OpenCV QUIET)
+    if(NOT OpenCV_FOUND)
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(OPENCV4 REQUIRED IMPORTED_TARGET opencv4)
+        set(OpenCV_FOUND TRUE)
+        set(OpenCV_INCLUDE_DIRS ${OPENCV4_INCLUDE_DIRS})
+        set(OpenCV_LIBRARY_DIRS ${OPENCV4_STATIC_LIBRARY_DIRS})
+        set(OpenCV_LIBS ${OPENCV4_STATIC_LIBRARIES})
+        set(_opencv_via_pkgconfig TRUE)
+    endif()
 else()
     find_package(OpenCV REQUIRED)
 endif()
 
 set(CAMDROP_OPENCV_EXTRA_LIBS "")
-if(MINGW)
+if(_opencv_via_pkgconfig)
     list(APPEND CAMDROP_OPENCV_EXTRA_LIBS
         jpeg
         png
@@ -81,7 +87,7 @@ target_include_directories(camdrop_opencv INTERFACE ${OpenCV_INCLUDE_DIRS})
 if(OpenCV_LIBRARY_DIRS)
     target_link_directories(camdrop_opencv INTERFACE ${OpenCV_LIBRARY_DIRS})
 endif()
-if(MINGW)
+if(_opencv_via_pkgconfig)
     target_link_libraries(camdrop_opencv
         INTERFACE
             "$<LINK_GROUP:RESCAN,${OpenCV_LIBS},${CAMDROP_OPENCV_EXTRA_LIBS}>"
