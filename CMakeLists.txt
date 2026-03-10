@@ -119,12 +119,6 @@ if(CAMDROP_BUILD_ORT_PIPELINE)
             IMPORTED_LOCATION             "${ONNXRUNTIME_LIBRARY}"
             INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_INCLUDE_DIR}"
         )
-        if(WIN32 AND ONNXRUNTIME_DLL)
-            set_target_properties(onnxruntime::onnxruntime PROPERTIES
-                IMPORTED_IMPLIB  "${ONNXRUNTIME_LIBRARY}"
-                IMPORTED_LOCATION "${ONNXRUNTIME_DLL}"
-            )
-        endif()
     endif()
     mark_as_advanced(ONNXRUNTIME_INCLUDE_DIR ONNXRUNTIME_LIBRARY ONNXRUNTIME_DLL)
 endif()
