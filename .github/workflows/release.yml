@@ -26,12 +26,13 @@ env:
   ORT_VERSION:    '1.20.1'
 
 jobs:
-  build:
+  # ── Windows / MSVC ──────────────────────────────────────────────
+  build-windows:
     name: Build encoder & decoder (Windows / MSVC)
     runs-on: windows-latest
 
     steps:
-      # ── 发布前校验 ────────────────────────────────────────────────
+      # ── 发布前校验 ──────────────────────────────────────────────
       - name: Validate release inputs
         if: github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true'
         shell: pwsh
@@ -46,7 +47,7 @@ jobs:
         with:
           submodules: recursive
 
-      # ── OpenCV ────────────────────────────────────────────────────
+      # ── OpenCV ──────────────────────────────────────────────────
       - name: Cache OpenCV
         id: cache-opencv
         uses: actions/cache@v4
@@ -62,7 +63,7 @@ jobs:
           Invoke-WebRequest -Uri $url -OutFile opencv-installer.exe -UseBasicParsing
           & "C:\Program Files\7-Zip\7z.exe" x opencv-installer.exe -oC:\ -y | Out-Null
 
-      # ── ONNX Runtime ──────────────────────────────────────────────
+      # ── ONNX Runtime ────────────────────────────────────────────
       - name: Cache ONNX Runtime
         id: cache-ort
         uses: actions/cache@v4
@@ -80,7 +81,7 @@ jobs:
           Expand-Archive ort.zip -DestinationPath C:\
           Rename-Item "C:\$pkg" C:\onnxruntime
 
-      # ── Build ─────────────────────────────────────────────────────
+      # ── Build ───────────────────────────────────────────────────
       - name: Configure CMake
         shell: pwsh
         run: |
@@ -99,18 +100,17 @@ jobs:
             --target file_video_encoder file_video_decoder `
             --parallel
 
-      # ── 打包产物 ──────────────────────────────────────────────────
+      # ── 打包产物 ────────────────────────────────────────────────
       - name: Collect artifacts
         shell: pwsh
         run: |
           $dist = "dist"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
-          # 可执行文件
           Copy-Item "build\Release\file_video_encoder.exe" $dist
           Copy-Item "build\Release\file_video_decoder.exe" $dist
 
-          # CMake POST_BUILD 已将 onnxruntime.dll 以及（若 CMake>=3.21）opencv DLL 复制至此
+          # CMake POST_BUILD 已将 onnxruntime.dll 复制至此
           Get-ChildItem "build\Release" -Filter "*.dll" | ForEach-Object {
               Copy-Item $_.FullName $dist
               Write-Host "Bundled from build: $($_.Name)"
@@ -126,25 +126,124 @@ jobs:
               Write-Host "Bundled OpenCV (fallback): $($ocvDll.Name)"
           }
 
-          Compress-Archive -Path "$dist\*" -DestinationPath camera-drop-tools.zip
+          Compress-Archive -Path "$dist\*" -DestinationPath camera-drop-tools-windows.zip
           Write-Host "Package contents:"
           Get-ChildItem $dist | Select-Object Name, Length
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: camera-drop-tools
-          path: camera-drop-tools.zip
+          name: camera-drop-tools-windows
+          path: camera-drop-tools-windows.zip
           retention-days: 30
 
-      # ── 发布至 Release（仅手动触发且勾选发布时执行）─────────────
-      - name: Create GitHub Release
+  # ── Linux / GCC ─────────────────────────────────────────────────
+  build-linux:
+    name: Build encoder & decoder (Linux / GCC)
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 发布前校验 ──────────────────────────────────────────────
+      - name: Validate release inputs
         if: github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true'
+        run: |
+          if [ -z "${{ inputs.version }}" ]; then
+            echo "::error::version is required when publish_release is true"
+            exit 1
+          fi
+
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # ── OpenCV ──────────────────────────────────────────────────
+      - name: Install OpenCV
+        run: sudo apt-get update && sudo apt-get install -y libopencv-dev
+
+      # ── ONNX Runtime ────────────────────────────────────────────
+      - name: Cache ONNX Runtime
+        id: cache-ort
+        uses: actions/cache@v4
+        with:
+          path: /opt/onnxruntime
+          key: onnxruntime-${{ env.ORT_VERSION }}-linux-x64
+
+      - name: Download & extract ONNX Runtime
+        if: steps.cache-ort.outputs.cache-hit != 'true'
+        run: |
+          pkg="onnxruntime-linux-x64-${{ env.ORT_VERSION }}"
+          url="https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/${pkg}.tgz"
+          wget -q "$url" -O ort.tgz
+          mkdir -p /opt/onnxruntime
+          tar -xzf ort.tgz --strip-components=1 -C /opt/onnxruntime
+
+      # ── Build ───────────────────────────────────────────────────
+      - name: Configure CMake
+        run: |
+          cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DONNXRUNTIME_ROOT=/opt/onnxruntime \
+            -DCAMDROP_BUILD_VISION=ON \
+            -DCAMDROP_BUILD_ORT_PIPELINE=ON \
+            -DCAMDROP_BUILD_MISC_TOOLS=OFF
+
+      - name: Build encoder & decoder
+        run: |
+          cmake --build build \
+            --target file_video_encoder file_video_decoder \
+            --parallel
+
+      # ── 打包产物 ────────────────────────────────────────────────
+      - name: Collect artifacts
+        run: |
+          mkdir dist
+          cp build/file_video_encoder dist/
+          cp build/file_video_decoder dist/
+
+          # ONNX Runtime 共享库（复制所有非符号链接的 .so 文件）
+          find /opt/onnxruntime/lib -name "*.so*" ! -type l | while read f; do
+            cp "$f" dist/
+            echo "Bundled: $(basename $f)"
+          done
+
+          echo "Package contents:"
+          ls -lh dist/
+          tar -czf camera-drop-tools-linux.tar.gz -C dist .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: camera-drop-tools-linux
+          path: camera-drop-tools-linux.tar.gz
+          retention-days: 30
+
+  # ── 发布至 Release（仅手动触发且勾选发布时执行）──────────────────
+  publish:
+    name: Publish GitHub Release
+    needs: [build-windows, build-linux]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: camera-drop-tools-windows
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: camera-drop-tools-linux
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.version }}
           name: ${{ inputs.release_name || inputs.version }}
-          files: camera-drop-tools.zip
+          files: |
+            camera-drop-tools-windows.zip
+            camera-drop-tools-linux.tar.gz
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -9,7 +9,8 @@ env:
   ORT_VERSION:    '1.20.1'
 
 jobs:
-  build:
+  # ── Windows / MSVC ──────────────────────────────────────────────
+  build-windows:
     name: Build all targets (Windows / MSVC)
     runs-on: windows-latest
 
@@ -19,7 +20,7 @@ jobs:
         with:
           submodules: recursive
 
-      # ── OpenCV ────────────────────────────────────────────────────
+      # ── OpenCV ──────────────────────────────────────────────────
       - name: Cache OpenCV
         id: cache-opencv
         uses: actions/cache@v4
@@ -35,7 +36,7 @@ jobs:
           Invoke-WebRequest -Uri $url -OutFile opencv-installer.exe -UseBasicParsing
           & "C:\Program Files\7-Zip\7z.exe" x opencv-installer.exe -oC:\ -y | Out-Null
 
-      # ── ONNX Runtime ──────────────────────────────────────────────
+      # ── ONNX Runtime ────────────────────────────────────────────
       - name: Cache ONNX Runtime
         id: cache-ort
         uses: actions/cache@v4
@@ -53,8 +54,8 @@ jobs:
           Expand-Archive ort.zip -DestinationPath C:\
           Rename-Item "C:\$pkg" C:\onnxruntime
 
-      # ── Build ─────────────────────────────────────────────────────
-      - name: Configure CMake (all targets)
+      # ── Build ───────────────────────────────────────────────────
+      - name: Configure CMake
         shell: pwsh
         run: |
           cmake -B build -S . `
@@ -68,3 +69,48 @@ jobs:
       - name: Build
         shell: pwsh
         run: cmake --build build --config Release --parallel
+
+  # ── Linux / GCC ─────────────────────────────────────────────────
+  build-linux:
+    name: Build all targets (Linux / GCC)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # ── OpenCV ──────────────────────────────────────────────────
+      - name: Install OpenCV
+        run: sudo apt-get update && sudo apt-get install -y libopencv-dev
+
+      # ── ONNX Runtime ────────────────────────────────────────────
+      - name: Cache ONNX Runtime
+        id: cache-ort
+        uses: actions/cache@v4
+        with:
+          path: /opt/onnxruntime
+          key: onnxruntime-${{ env.ORT_VERSION }}-linux-x64
+
+      - name: Download & extract ONNX Runtime
+        if: steps.cache-ort.outputs.cache-hit != 'true'
+        run: |
+          pkg="onnxruntime-linux-x64-${{ env.ORT_VERSION }}"
+          url="https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/${pkg}.tgz"
+          wget -q "$url" -O ort.tgz
+          mkdir -p /opt/onnxruntime
+          tar -xzf ort.tgz --strip-components=1 -C /opt/onnxruntime
+
+      # ── Build ───────────────────────────────────────────────────
+      - name: Configure CMake
+        run: |
+          cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DONNXRUNTIME_ROOT=/opt/onnxruntime \
+            -DCAMDROP_BUILD_VISION=ON \
+            -DCAMDROP_BUILD_ORT_PIPELINE=ON \
+            -DCAMDROP_BUILD_MISC_TOOLS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
