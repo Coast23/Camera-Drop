@@ -27,14 +27,6 @@ public:
     inline static uint32_t RS_DATA_SIZE   = 0;  // RS 数据字节数
     inline static uint32_t RS_PARITY_SIZE = 0;  // RS 校验字节数
     
-    /*  调参说明：
-        设误码率为 p。
-        设 RS 块大小为 N（即上面的RS_BLOCK_SIZE），
-        那么，应该取 RS_PARITY_SIZE = 2 * ceil((N * p + 3 * sqrt(N * p * (1 - p))))，
-        自然地，RS_DATA_SIZE = N - RS_PARITY_SIZE。
-    */
-
-
     inline static uint32_t RS_BLOCKS_PER_FOUNTAIN_CHUNK = 0;
                         // 这个值必须保证 Packet Count <= 64000！不然会运行错误
 
@@ -46,19 +38,13 @@ public:
     static const uint32_t FOUNTAIN_HEADER_SIZE = 10;  // 帧头大小 file_size(4) + original_size(4) + block_id(2)
     static const uint32_t FOUNTAIN_CRC_SIZE = 4;      // 帧尾 CRC 大小
 
-    static constexpr uint32_t MAX_FILE_SIZE = 200 * 1024 * 1024; // 限制文件大小不超过 200 MB
+    static constexpr uint32_t MAX_FILE_SIZE = 60 * 1024 * 1024; // 限制文件大小不超过 60 MB
     
     inline static float REDUNDANCY_FACTOR = 1.01f;  // 冗余系数，不要设太大，优先调 RS 的 ECC 比例！
-    /*  调参说明：
-        这个东西要用二项分布去算，非常麻烦。只能给一些经验值。
-        如果 acc 在 95%，取 REDUNDANCY_FACTOR 为略高于 1.06f 的值（如 1.08f），
-        如果 acc 在 90%，取 REDUNDANCY_FACTOR 为略高于 1.08f 的值（如 1.11f）。
-        总之，这个值应该保持在 1.05f ~ 1.25f。
-    */
 
     // 动态参数，可由命令行覆盖
     inline static int COMPRESSION_LEVEL = 9;        // Zstd 压缩等级
-    inline static int OUTPUT_FPS = 15;              // 视频输出帧率
+    inline static int OUTPUT_FPS = 30;              // 视频输出帧率
     inline static std::string INPUT_VIDEO_FILE = "";
     inline static std::string OUTPUT_VIDEO_FILE = "output.avi";
     inline static std::string VOUT_FILE = "vout.bin";
@@ -78,6 +64,8 @@ private:
 
 public:
     static void auto_config(double acc = 0.95){
+        if(acc >= 0.9999999) acc = 0.9990;
+        if(acc <= 0.0000001) acc = 0.0001;
         double p = 1.0 - acc;
         // 选择能被整除的 RS_BLOCK_SIZE
         uint32_t best_N = 255, min_padding = PACKET_CAPACITY;
@@ -95,10 +83,11 @@ public:
         double miu = best_N * p;
         double sigma = std::sqrt(best_N * p * (1 - p));
         int E = static_cast<int>(std::ceil( miu + 3.05 * sigma));
-        if(E < 0) E = 0; // impossible
+        
         if((E << 1) >= RS_BLOCK_SIZE){ // Oops
             throw std::runtime_error("The acc is too low to transmit data!");
         }
+
         RS_PARITY_SIZE = E << 1;
         RS_DATA_SIZE = RS_BLOCK_SIZE - RS_PARITY_SIZE;
     
