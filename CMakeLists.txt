@@ -142,7 +142,7 @@ function(camdrop_configure_target target_name)
     endif()
 
     if(MSVC)
-        target_compile_options(${target_name} PRIVATE /W3)
+        target_compile_options(${target_name} PRIVATE /W3 /permissive-)
     else()
         target_compile_options(${target_name} PRIVATE -O2 -Wall)
     endif()
