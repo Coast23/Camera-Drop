@@ -40,6 +40,8 @@ MAX_FILL    = 54
 # 权重越低分辨率越大（低分辨率更难区分，给更高权重）
 EVAL_SCALES  = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5]
 EVAL_WEIGHTS = [1,   2,   3,   4,   5,   6  ]   # 低分辨率档给更高权重
+EVAL_SCORE_WEIGHTS = [0.74, 0.14, 0.12, 0.06, 0.03, 20.0, 44.0, 0.04, 0.08, 0.06, 0.09]
+DEFAULT_WORKERS = min(16, max(1, cpu_count() - 1))
 
 FONT_SOURCES = [
     ("C:/Windows/Fonts/webdings.ttf",   list(range(0xF020, 0xF0FF))),
@@ -85,14 +87,20 @@ def gen_our_system_patterns():
 
 def gen_cimbar_patterns():
     """读取 cimbar 已有的 16 个 pattern（R channel: 0=前景）"""
-    base = 'D:/jiwang/1/libcimbar-master/bitmap/4'
-    if not os.path.exists(base):
-        print(f"  [跳过] cimbar 目录不存在: {base}")
+    root = Path(__file__).resolve().parent.parent
+    candidates = [
+        root / "cfc-master" / "app" / "src" / "cpp" / "libcimbar" / "bitmap" / "4",
+        root / "libcimbar-master" / "bitmap" / "4",
+        Path("D:/jiwang/1/libcimbar-master/bitmap/4"),
+    ]
+    base = next((p for p in candidates if p.exists()), None)
+    if base is None:
+        print(f"  [跳过] cimbar 目录不存在: {[str(p) for p in candidates]}")
         return []
     patterns = []
     for name in sorted(os.listdir(base)):
         if not name.endswith('.png'): continue
-        img = cv2.imread(f'{base}/{name}', cv2.IMREAD_UNCHANGED)
+        img = cv2.imread(str(base / name), cv2.IMREAD_UNCHANGED)
         if img is None: continue
         ch = img[:, :, 2] if img.ndim == 3 and img.shape[2] >= 3 else img
         mask = (ch < 128).astype(np.uint8)
@@ -578,12 +586,22 @@ def _eval_worker(args):
 import subprocess
 
 # eval_patterns.exe 的默认路径（可被 main() 的 --eval-exe 覆盖）
-_DEFAULT_EVAL_EXE = str(Path(__file__).parent.parent / "build" / "eval_patterns.exe")
+def _resolve_default_eval_exe():
+    root = Path(__file__).parent.parent
+    for cand in (root / "tools" / "tmp_eval" / "eval_patterns.exe",
+                 root / "build-user" / "eval_patterns.exe",
+                 root / "build" / "eval_patterns.exe"):
+        if cand.exists():
+            return str(cand)
+    return str(root / "tools" / "tmp_eval" / "eval_patterns.exe")
+
+
+_DEFAULT_EVAL_EXE = _resolve_default_eval_exe()
 
 
 def eval_cpp_batch(combos_indices, all_masks, scales, weights, seeds, exe_path,
                    batch_size=200, workers=None, on_batch_done=None,
-                   better_than=None):
+                   better_than=None, timeout_sec=None):
     """
     将若干组 pattern 组合批量送入 eval_patterns.exe 评测（多进程并行）。
 
@@ -603,7 +621,7 @@ def eval_cpp_batch(combos_indices, all_masks, scales, weights, seeds, exe_path,
         _has_tqdm = False
 
     if workers is None:
-        workers = max(1, (cpu_count() or 2) - 1)
+        workers = DEFAULT_WORKERS
 
     # 预计算所有 mask 的 uint64 bits
     bits_cache = {idx: _mask_to_bits(all_masks[idx]) for idx in
@@ -617,13 +635,20 @@ def eval_cpp_batch(combos_indices, all_masks, scales, weights, seeds, exe_path,
         "scales":  scales,
         "weights": [float(w) for w in weights],
         "seeds":   list(seeds),
+        "score_weights": EVAL_SCORE_WEIGHTS,
     }
 
     def run_one_batch(batch):
         combos_bits = [[bits_cache[i] for i in combo] for combo in batch]
         inp = json.dumps({**payload_base, "combos": combos_bits})
-        proc = subprocess.run([exe_path], input=inp,
-                              capture_output=True, text=True, timeout=600)
+        run_kwargs = {
+            'input': inp,
+            'capture_output': True,
+            'text': True,
+        }
+        if timeout_sec is not None and timeout_sec > 0:
+            run_kwargs['timeout'] = timeout_sec
+        proc = subprocess.run([exe_path], **run_kwargs)
         if proc.returncode != 0:
             raise RuntimeError(f"eval_patterns.exe 失败: {proc.stderr[:300]}")
         scores = json.loads(proc.stdout)["scores"]
@@ -661,11 +686,143 @@ def _find_seed_indices(names, prefix, n):
     return tuple(sorted(idx[:n])) if len(idx) >= n else None
 
 
+def _build_diverse_random_start(masks, n, rng):
+    bits = [_mask_to_bits(m) for m in masks]
+    total = len(bits)
+    if total < n:
+        return None
+    first = int(rng.integers(0, total))
+    chosen = [first]
+    chosen_set = {first}
+    min_dist = np.full(total, 65, dtype=np.int16)
+    for i in range(total):
+        min_dist[i] = _hamming(bits[i], bits[first])
+    min_dist[first] = -1
+
+    while len(chosen) < n:
+        order = rng.permutation(total)
+        best_idx = -1
+        best_score = -1
+        for idx in order:
+            idx = int(idx)
+            if idx in chosen_set:
+                continue
+            score = int(min_dist[idx])
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+        if best_idx < 0:
+            break
+        chosen.append(best_idx)
+        chosen_set.add(best_idx)
+        min_dist[best_idx] = -1
+        for i in range(total):
+            if i in chosen_set:
+                continue
+            d = _hamming(bits[i], bits[best_idx])
+            if d < min_dist[i]:
+                min_dist[i] = d
+
+    return tuple(sorted(chosen)) if len(chosen) == n else None
+
+
+def build_start_combos(all_patterns, n, random_starts=0, rng_seed=12345):
+    names = [p[0] for p in all_patterns]
+    masks = [p[1] for p in all_patterns]
+    starts = []
+    seen = set()
+
+    def add(label, combo):
+        if combo is None or len(combo) != n:
+            return
+        combo = tuple(sorted(combo))
+        if combo in seen:
+            return
+        starts.append((label, combo))
+        seen.add(combo)
+
+    add('cimbar', _find_seed_indices(names, 'cimbar', n))
+    add('seedbest', _find_seed_indices(names, 'seedbest', n))
+    add('our', _find_seed_indices(names, 'our', n))
+    add('fallback', tuple(range(n)))
+
+    rng = np.random.default_rng(rng_seed)
+    for i in range(max(0, random_starts)):
+        add(f'random{i+1}', _build_diverse_random_start(masks, n, rng))
+
+    return starts
+
+
+def _combo_to_bits_key(combo_indices, bits_list):
+    return ','.join(str(bits_list[i]) for i in combo_indices)
+
+
+def _combo_from_bits_value(bits_value, bits_to_idx, expected_len=None):
+    if bits_value is None:
+        return None
+    if isinstance(bits_value, str):
+        parts = [p for p in bits_value.split(',') if p != '']
+    elif isinstance(bits_value, (list, tuple)):
+        parts = list(bits_value)
+    else:
+        return None
+    try:
+        bits_combo = tuple(int(x) for x in parts)
+    except (TypeError, ValueError):
+        return None
+    idx_combo = tuple(sorted(bits_to_idx[b] for b in bits_combo if b in bits_to_idx))
+    if len(idx_combo) != len(bits_combo):
+        return None
+    if expected_len is not None and len(idx_combo) != expected_len:
+        return None
+    return idx_combo
+
+
+def _load_checkpoint_results(checkpoint_path, bits_to_idx, expected_len=None):
+    if not checkpoint_path or not Path(checkpoint_path).exists():
+        return {}, {}, 0
+    with open(checkpoint_path, encoding='utf-8') as f:
+        raw_ckpt = json.load(f)
+    if isinstance(raw_ckpt, dict) and isinstance(raw_ckpt.get('results'), dict):
+        raw_results = raw_ckpt.get('results', {})
+        meta = raw_ckpt.get('__meta__') or raw_ckpt.get('meta') or {}
+    else:
+        raw_results = raw_ckpt if isinstance(raw_ckpt, dict) else {}
+        meta = {}
+    all_results = {}
+    skipped = 0
+    for k, v in raw_results.items():
+        idx_combo = _combo_from_bits_value(k, bits_to_idx, expected_len)
+        if idx_combo is None:
+            skipped += 1
+            continue
+        all_results[idx_combo] = v
+    return all_results, meta, skipped
+
+
+def _save_checkpoint(checkpoint_path, all_results, bits_list, meta=None):
+    if not checkpoint_path:
+        return
+    payload = {
+        'results': {
+            _combo_to_bits_key(k, bits_list): v
+            for k, v in all_results.items()
+        }
+    }
+    if meta:
+        payload['__meta__'] = meta
+    path = Path(checkpoint_path)
+    tmp_path = path.with_suffix(path.suffix + '.tmp')
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    tmp_path.replace(path)
+
+
 def search_greedy_expand(all_patterns, fixed_indices,
                          target_n,
                          scales=None, weights=None, seeds=(0, 1, 2),
                          exe_path=None, workers=None,
-                         checkpoint_path=None, out_dir=None):
+                         checkpoint_path=None, out_dir=None,
+                         eval_timeout=None):
     """
     贪心扩展：从 fixed_indices 出发，每轮从候选池中选一个新 pattern 加入，
     使当前组合得分最高，直到组合大小达到 target_n。
@@ -677,7 +834,7 @@ def search_greedy_expand(all_patterns, fixed_indices,
     if scales  is None: scales  = EVAL_SCALES
     if weights is None: weights = EVAL_WEIGHTS
     if exe_path is None: exe_path = _DEFAULT_EVAL_EXE
-    if workers is None: workers = max(1, (cpu_count() or 2) - 1)
+    if workers is None: workers = DEFAULT_WORKERS
     if not Path(exe_path).exists():
         raise FileNotFoundError(f"找不到 eval_patterns.exe: {exe_path}")
 
@@ -688,50 +845,59 @@ def search_greedy_expand(all_patterns, fixed_indices,
     bits_list   = [_mask_to_bits(m) for m in masks]
     bits_to_idx = {b: i for i, b in enumerate(bits_list)}
 
-    all_results = {}
-
-    # 断点恢复（key = bits）
+    all_results, _, skipped = _load_checkpoint_results(checkpoint_path, bits_to_idx)
     if checkpoint_path and Path(checkpoint_path).exists():
-        with open(checkpoint_path) as f:
-            raw = json.load(f)
-        skipped = 0
-        for k, v in raw.items():
-            bits_combo = tuple(int(x) for x in k.split(','))
-            idx_combo = tuple(sorted(bits_to_idx[b] for b in bits_combo
-                                     if b in bits_to_idx))
-            if len(idx_combo) == len(bits_combo):
-                all_results[idx_combo] = v
-            else:
-                skipped += 1
         print(f"  断点恢复：加载 {len(all_results)} 组（跳过 {skipped} 条）")
 
+    preview_state = {'combo': None}
+
     def save_ckpt():
-        if checkpoint_path:
-            with open(checkpoint_path, 'w') as f:
-                json.dump({','.join(str(bits_list[i]) for i in k): v
-                           for k, v in all_results.items()}, f)
+        _save_checkpoint(checkpoint_path, all_results, bits_list)
 
     def save_best_preview():
         if not out_dir or not all_results:
             return
+        out_path = Path(out_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
         best_idx = max(all_results, key=all_results.get)
-        score    = all_results[best_idx]
-        pts      = [(names[i], masks[i]) for i in best_idx]
-        cols     = min(len(pts), 8)
-        rows     = (len(pts) + cols - 1) // cols
-        sc, pad  = 20, 3
-        canvas   = np.ones((rows*(TILE_SIZE*sc+pad)+pad,
-                            cols*(TILE_SIZE*sc+pad)+pad, 3), np.uint8) * 180
-        for idx, (_, mask) in enumerate(pts):
-            r, c = divmod(idx, cols)
-            y0 = r*(TILE_SIZE*sc+pad)+pad
-            x0 = c*(TILE_SIZE*sc+pad)+pad
-            tile_big = cv2.resize(((1-mask)*255).astype(np.uint8),
-                                  (TILE_SIZE*sc, TILE_SIZE*sc),
-                                  interpolation=cv2.INTER_NEAREST)
-            canvas[y0:y0+TILE_SIZE*sc, x0:x0+TILE_SIZE*sc] = cv2.cvtColor(tile_big, cv2.COLOR_GRAY2BGR)
-        cv2.imwrite(str(Path(out_dir) / 'best_preview.png'), canvas)
-        (Path(out_dir) / 'best_score.txt').write_text(f"{score:.6f}\n")
+        combo_key = tuple(best_idx)
+        if preview_state['combo'] == combo_key:
+            return
+        score = all_results[best_idx]
+        pts = [(names[i], masks[i]) for i in best_idx]
+        try:
+            cols = min(len(pts), 8)
+            rows = (len(pts) + cols - 1) // cols
+            sc, pad = 20, 3
+            canvas = np.ones((rows * (TILE_SIZE * sc + pad) + pad,
+                              cols * (TILE_SIZE * sc + pad) + pad, 3), np.uint8) * 180
+            for idx, (_, mask) in enumerate(pts):
+                r, c = divmod(idx, cols)
+                y0 = r * (TILE_SIZE * sc + pad) + pad
+                x0 = c * (TILE_SIZE * sc + pad) + pad
+                tile_big = cv2.resize(((1 - mask) * 255).astype(np.uint8),
+                                      (TILE_SIZE * sc, TILE_SIZE * sc),
+                                      interpolation=cv2.INTER_NEAREST)
+                canvas[y0:y0 + TILE_SIZE * sc, x0:x0 + TILE_SIZE * sc] = cv2.cvtColor(tile_big, cv2.COLOR_GRAY2BGR)
+            cv2.imwrite(str(out_path / 'best_preview.png'), canvas)
+            (out_path / 'best_score.txt').write_text(f"{score:.6f}\n", encoding='utf-8')
+
+            best_dir = out_path / 'best'
+            best_dir.mkdir(parents=True, exist_ok=True)
+            for hex_idx, (pname, mask) in enumerate(pts):
+                tile_big = cv2.resize(((1 - mask) * 255).astype(np.uint8),
+                                      (TILE_SIZE * sc, TILE_SIZE * sc),
+                                      interpolation=cv2.INTER_NEAREST)
+                fname = best_dir / f'{hex_idx:02x}.png'
+                cv2.imwrite(str(fname), tile_big)
+            meta = [{"idx": hex_idx, "name": pname, "fill": int(mask.sum())}
+                    for hex_idx, (pname, mask) in enumerate(pts)]
+            (best_dir / 'meta.json').write_text(
+                json.dumps({"score": score, "patterns": meta}, indent=2, ensure_ascii=False))
+            preview_state['combo'] = combo_key
+        except OSError as exc:
+            print(f"    [warn] skip preview save: {exc}")
+
 
     def eval_batch(combos):
         todo = [c for c in combos if c not in all_results]
@@ -741,7 +907,8 @@ def search_greedy_expand(all_patterns, fixed_indices,
                 save_ckpt()
                 save_best_preview()
             new = eval_cpp_batch(todo, masks, scales, weights, seeds, exe_path,
-                                 workers=workers, on_batch_done=on_done)
+                                 workers=workers, on_batch_done=on_done,
+                                 timeout_sec=eval_timeout)
             all_results.update(new)
         return {c: all_results[c] for c in combos}
 
@@ -776,9 +943,13 @@ def search_best_set_ils(all_patterns, n=16,
                         scales=None, weights=None, seeds=(0, 1, 2),
                         exe_path=None, workers=None,
                         fixed_indices=None,
+                        start_combo_indices=None,
                         start_patterns=None,
+                        bootstrap_results=None,
+                        resume_checkpoint_state=True,
                         temp_init=0.02, temp_min=1e-4, cooling=0.92,
-                        checkpoint_path=None, out_dir=None):
+                        checkpoint_path=None, out_dir=None,
+                        eval_timeout=None):
     """
     迭代局部搜索（ILS）找最优 n-pattern 组合。
 
@@ -799,7 +970,7 @@ def search_best_set_ils(all_patterns, n=16,
     if scales  is None: scales  = EVAL_SCALES
     if weights is None: weights = EVAL_WEIGHTS
     if exe_path is None: exe_path = _DEFAULT_EVAL_EXE
-    if workers is None: workers = max(1, (cpu_count() or 2) - 1)
+    if workers is None: workers = DEFAULT_WORKERS
     if not Path(exe_path).exists():
         raise FileNotFoundError(f"找不到 eval_patterns.exe: {exe_path}")
 
@@ -814,71 +985,91 @@ def search_best_set_ils(all_patterns, n=16,
     bits_list = [_mask_to_bits(m) for m in masks]          # index -> uint64
     bits_to_idx = {b: i for i, b in enumerate(bits_list)}  # uint64 -> index
 
-    all_results = {}   # {indices_tuple: score}
+    all_results = dict(bootstrap_results or {})
+    ckpt_results, ckpt_meta, skipped = _load_checkpoint_results(checkpoint_path, bits_to_idx, n)
+    all_results.update(ckpt_results)
     if checkpoint_path and Path(checkpoint_path).exists():
-        with open(checkpoint_path) as f:
-            raw_ckpt = json.load(f)
-        skipped = 0
-        for k, v in raw_ckpt.items():
-            bits_combo = tuple(int(x) for x in k.split(','))
-            if len(bits_combo) != n:
-                skipped += 1; continue
-            idx_combo = tuple(sorted(bits_to_idx[b] for b in bits_combo
-                                     if b in bits_to_idx))
-            if len(idx_combo) != n:
-                skipped += 1; continue  # 有 pattern 不在当前候选池
-            all_results[idx_combo] = v
-        print(f"  断点恢复：加载 {len(all_results)} 组（跳过 {skipped} 条不匹配）")
+        print(f"  断点恢复：加载 {len(ckpt_results)} 组（跳过 {skipped} 条不匹配）")
+
+    preview_state = {'combo': None}
+
+    import math, random as _rng
+    round_idx = 0
+    t_total = time.time()
+    temp = temp_init
+    best_combo = None
+    best_score = None
+    best_ever_combo = None
+    best_ever_score = None
+    sa_temp_scale = 0.35
+    backtrack_block_rounds = 1
+    blocked_combo = None
+    blocked_until_round = -1
+
+    checkpoint_state = {}
+
+    def refresh_ckpt_state():
+        checkpoint_state.clear()
+        checkpoint_state.update({
+            'version': 2,
+            'n': n,
+            'round_idx': int(round_idx),
+            'temp': float(temp),
+            'current_combo_bits': [bits_list[i] for i in best_combo] if best_combo else [],
+            'current_score': float(best_score) if best_score is not None else None,
+            'best_ever_combo_bits': [bits_list[i] for i in best_ever_combo] if best_ever_combo else [],
+            'best_ever_score': float(best_ever_score) if best_ever_score is not None else None,
+            'blocked_combo_bits': [bits_list[i] for i in blocked_combo] if blocked_combo else [],
+            'blocked_until_round': int(blocked_until_round),
+        })
 
     def save_ckpt():
-        if checkpoint_path:
-            with open(checkpoint_path, 'w') as f:
-                # key 用 bits，值不变
-                json.dump({','.join(str(bits_list[i]) for i in k): v
-                           for k, v in all_results.items()}, f)
+        _save_checkpoint(checkpoint_path, all_results, bits_list, checkpoint_state or None)
 
     def save_best_preview():
-        """把当前 all_results 最高分的组合保存为 best_preview.png 和 best/ 子目录。"""
         if not out_dir or not all_results:
             return
+        out_path = Path(out_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
         best_idx = max(all_results, key=all_results.get)
-        score    = all_results[best_idx]
-        pts      = [(names[i], masks[i]) for i in best_idx]
+        combo_key = tuple(best_idx)
+        if preview_state['combo'] == combo_key:
+            return
+        score = all_results[best_idx]
+        pts = [(names[i], masks[i]) for i in best_idx]
+        try:
+            cols = min(len(pts), 8)
+            rows = (len(pts) + cols - 1) // cols
+            sc, pad = 20, 3
+            canvas = np.ones((rows * (TILE_SIZE * sc + pad) + pad,
+                              cols * (TILE_SIZE * sc + pad) + pad, 3), np.uint8) * 180
+            for idx, (_, mask) in enumerate(pts):
+                r, c = divmod(idx, cols)
+                y0 = r * (TILE_SIZE * sc + pad) + pad
+                x0 = c * (TILE_SIZE * sc + pad) + pad
+                tile_big = cv2.resize(((1 - mask) * 255).astype(np.uint8),
+                                      (TILE_SIZE * sc, TILE_SIZE * sc),
+                                      interpolation=cv2.INTER_NEAREST)
+                canvas[y0:y0 + TILE_SIZE * sc, x0:x0 + TILE_SIZE * sc] = cv2.cvtColor(tile_big, cv2.COLOR_GRAY2BGR)
+            cv2.imwrite(str(out_path / 'best_preview.png'), canvas)
+            (out_path / 'best_score.txt').write_text(f"{score:.6f}\n", encoding='utf-8')
 
-        # ── best_preview.png（拼接大图）────────────────────────────
-        cols     = min(len(pts), 8)
-        rows_n   = (len(pts) + cols - 1) // cols
-        sc, pad  = 20, 3
-        canvas   = np.ones((rows_n*(TILE_SIZE*sc+pad)+pad,
-                            cols*(TILE_SIZE*sc+pad)+pad, 3), np.uint8) * 180
-        for idx, (_, mask) in enumerate(pts):
-            r, c = divmod(idx, cols)
-            y0 = r*(TILE_SIZE*sc+pad)+pad
-            x0 = c*(TILE_SIZE*sc+pad)+pad
-            tile_big = cv2.resize(((1-mask)*255).astype(np.uint8),
-                                  (TILE_SIZE*sc, TILE_SIZE*sc),
-                                  interpolation=cv2.INTER_NEAREST)
-            canvas[y0:y0+TILE_SIZE*sc, x0:x0+TILE_SIZE*sc] = cv2.cvtColor(tile_big, cv2.COLOR_GRAY2BGR)
-        cv2.imwrite(str(Path(out_dir) / 'best_preview.png'), canvas)
-        (Path(out_dir) / 'best_score.txt').write_text(f"{score:.6f}\n")
+            best_dir = out_path / 'best'
+            best_dir.mkdir(parents=True, exist_ok=True)
+            for hex_idx, (pname, mask) in enumerate(pts):
+                tile_big = cv2.resize(((1 - mask) * 255).astype(np.uint8),
+                                      (TILE_SIZE * sc, TILE_SIZE * sc),
+                                      interpolation=cv2.INTER_NEAREST)
+                fname = best_dir / f'{hex_idx:02x}.png'
+                cv2.imwrite(str(fname), tile_big)
+            meta = [{"idx": hex_idx, "name": pname, "fill": int(mask.sum())}
+                    for hex_idx, (pname, mask) in enumerate(pts)]
+            (best_dir / 'meta.json').write_text(
+                json.dumps({"score": score, "patterns": meta}, indent=2, ensure_ascii=False))
+            preview_state['combo'] = combo_key
+        except OSError as exc:
+            print(f"    [warn] skip preview save: {exc}")
 
-        # ── best/ 子目录：每个 pattern 单独一个文件 ────────────────
-        best_dir = Path(out_dir) / 'best'
-        best_dir.mkdir(exist_ok=True)
-        # 清空旧文件
-        for f in best_dir.glob('*.png'):
-            f.unlink()
-        for hex_idx, (pname, mask) in enumerate(pts):
-            tile_big = cv2.resize(((1-mask)*255).astype(np.uint8),
-                                  (TILE_SIZE*sc, TILE_SIZE*sc),
-                                  interpolation=cv2.INTER_NEAREST)
-            fname = best_dir / f'{hex_idx:02x}.png'
-            cv2.imwrite(str(fname), tile_big)
-        # meta：记录每个 pattern 的名字和得分
-        meta = [{"idx": hex_idx, "name": pname, "fill": int(mask.sum())}
-                for hex_idx, (pname, mask) in enumerate(pts)]
-        (best_dir / 'meta.json').write_text(
-            json.dumps({"score": score, "patterns": meta}, indent=2, ensure_ascii=False))
 
     def eval_batch(combos, better_than=None):
         """过滤掉已评测的，送 C++ 评测，存入 all_results（每批完成立即写 checkpoint + best_preview）。"""
@@ -890,12 +1081,33 @@ def search_best_set_ils(all_patterns, n=16,
                 save_best_preview()
             new = eval_cpp_batch(todo, masks, scales, weights, seeds, exe_path,
                                  workers=workers, on_batch_done=on_done,
-                                 better_than=better_than)
+                                 better_than=better_than,
+                                 timeout_sec=eval_timeout)
             all_results.update(new)
         return {c: all_results[c] for c in combos if c in all_results}
 
-    # ── 确定起点 ──────────────────────────────────────────────────
-    if start_patterns is not None:
+    restored_current_combo = _combo_from_bits_value(ckpt_meta.get('current_combo_bits'), bits_to_idx, n) if (ckpt_meta and resume_checkpoint_state) else None
+    restored_best_combo = _combo_from_bits_value(ckpt_meta.get('best_ever_combo_bits'), bits_to_idx, n) if ckpt_meta else None
+    restored_blocked_combo = _combo_from_bits_value(ckpt_meta.get('blocked_combo_bits'), bits_to_idx, n) if (ckpt_meta and resume_checkpoint_state) else None
+    restored_round_idx = int(ckpt_meta.get('round_idx', 0)) if (ckpt_meta and resume_checkpoint_state) else 0
+    restored_blocked_until = int(ckpt_meta.get('blocked_until_round', -1)) if (ckpt_meta and resume_checkpoint_state) else -1
+    try:
+        restored_temp = float(ckpt_meta.get('temp', temp_init)) if (ckpt_meta and resume_checkpoint_state) else temp_init
+    except (TypeError, ValueError):
+        restored_temp = temp_init
+    if not np.isfinite(restored_temp):
+        restored_temp = temp_init
+
+    # ── 确定起点 / 恢复点 ────────────────────────────────────────
+    if restored_current_combo is not None:
+        start_combo = restored_current_combo
+        print(f"\n  断点恢复: 从 checkpoint 当前组合继续（round={restored_round_idx}, T={restored_temp:.5f}）")
+    elif start_combo_indices is not None:
+        start_combo = tuple(sorted(start_combo_indices))
+        if len(start_combo) != n:
+            raise ValueError(f"start_combo_indices 长度 {len(start_combo)}/{n}，请检查")
+        print(f"\n  起点: 外部传入 index 组合")
+    elif start_patterns is not None:
         # 外部传入起点（例如第一阶段结果），按名字在候选池里找 index
         name_to_idx = {nm: i for i, nm in enumerate(names)}
         start_combo = tuple(sorted(name_to_idx[nm] for nm, _ in start_patterns
@@ -903,6 +1115,9 @@ def search_best_set_ils(all_patterns, n=16,
         if len(start_combo) != n:
             raise ValueError(f"start_patterns 中有 {len(start_combo)}/{n} 个在候选池内，请检查")
         print(f"\n  起点: 外部传入 {n} 个 pattern")
+    elif all_results:
+        start_combo = max(all_results, key=all_results.get)
+        print(f"\n  断点恢复: 从 checkpoint/缓存 已知最优组合继续")
     elif fixed_indices:
         # 32-pattern 模式：fixed 部分已确定，自由槽用候选池（非fixed）前几个填充
         free_slots = n - len(fixed_indices)
@@ -913,25 +1128,46 @@ def search_best_set_ils(all_patterns, n=16,
     else:
         start_combo = (
             _find_seed_indices(names, 'cimbar', n)
+            or _find_seed_indices(names, 'seedbest', n)
             or _find_seed_indices(names, 'our', n)
             or tuple(range(n))
         )
     print(f"  起点前4: {[names[i] for i in list(start_combo)[:4]]}...")
 
-    # 先评测起点
     res = eval_batch([start_combo])
     best_combo = start_combo
     best_score = res[start_combo]
-    print(f"  起点得分: {best_score:.4f}")
 
-    # ── SA + First-improvement 主循环 ────────────────────────────
-    import math, random as _rng
-    round_idx  = 0
-    t_total    = time.time()
-    temp       = temp_init
-    # best_ever 始终记录历史最高（SA 可能暂时接受更差的解，但最终返回最优）
-    best_ever_combo = best_combo
-    best_ever_score = best_score
+    if restored_current_combo is not None:
+        round_idx = restored_round_idx
+        temp = max(temp_min, restored_temp)
+        best_ever_combo = restored_best_combo or max(all_results, key=all_results.get)
+        best_ever_score = all_results.get(best_ever_combo, best_score)
+        blocked_combo = restored_blocked_combo
+        blocked_until_round = restored_blocked_until
+        print(f"  恢复当前得分: {best_score:.4f}  历史最优: {best_ever_score:.4f}")
+    else:
+        print(f"  起点得分: {best_score:.4f}")
+        best_ever_combo = restored_best_combo or best_combo
+        best_ever_score = all_results.get(best_ever_combo, best_score) if all_results else best_score
+        if best_ever_score < best_score:
+            best_ever_combo = best_combo
+            best_ever_score = best_score
+
+    refresh_ckpt_state()
+    save_ckpt()
+    if out_dir and best_ever_combo is not None:
+        current_patterns = [(names[i], masks[i]) for i in best_ever_combo]
+        save_patterns(current_patterns, out_dir)
+        save_best_preview()
+        meta = [{"idx": k, "name": names[i], "fill": int(masks[i].sum())}
+                for k, i in enumerate(best_ever_combo)]
+        (Path(out_dir) / "meta.json").write_text(
+            json.dumps({
+                "best_score": best_ever_score,
+                "patterns": meta,
+            }, indent=2, ensure_ascii=False),
+            encoding='utf-8')
 
     while temp > temp_min:
         round_idx += 1
@@ -950,6 +1186,8 @@ def search_best_set_ils(all_patterns, n=16,
                 nb[pos] = new_idx
                 neighbors.append(tuple(sorted(nb)))
         neighbors = list(dict.fromkeys(neighbors))
+        if blocked_combo is not None and round_idx <= blocked_until_round:
+            neighbors = [nb for nb in neighbors if nb != blocked_combo]
         _rng.shuffle(neighbors)
 
         print(f"\n  [Round {round_idx}]  T={temp:.5f}  cur={best_score:.4f}  "
@@ -961,6 +1199,8 @@ def search_best_set_ils(all_patterns, n=16,
         accepted_combo = None
         accepted_score = None
         evaluated      = 0
+        evaluated_cached = 0
+        evaluated_new    = 0
 
         def try_accept_batch(batch_res):
             """从一批结果里选最优，判断是否接受，返回 (combo, score) 或 None。"""
@@ -972,7 +1212,8 @@ def search_best_set_ils(all_patterns, n=16,
             if delta > 1e-6:
                 return best_nb, best_nb_s
             elif delta < 0 and temp > temp_min * 10:
-                if _rng.random() < math.exp(delta / temp):
+                effective_temp = max(temp * sa_temp_scale, temp_min)
+                if _rng.random() < math.exp(delta / effective_temp):
                     return best_nb, best_nb_s
             return None
 
@@ -984,6 +1225,7 @@ def search_best_set_ils(all_patterns, n=16,
             for bi in range(0, len(cached_list), step):
                 batch_res = dict(cached_list[bi:bi+step])
                 evaluated += len(batch_res)
+                evaluated_cached += len(batch_res)
                 result = try_accept_batch(batch_res)
                 if result:
                     accepted_combo, accepted_score = result
@@ -1002,9 +1244,11 @@ def search_best_set_ils(all_patterns, n=16,
                     save_best_preview()
                 new_res = eval_cpp_batch(batch, masks, scales, weights, seeds, exe_path,
                                          batch_size=20, workers=workers,
-                                         on_batch_done=on_done)
+                                         on_batch_done=on_done,
+                                         timeout_sec=eval_timeout)
                 all_results.update(new_res)
                 evaluated += len(new_res)
+                evaluated_new += len(new_res)
                 result = try_accept_batch(new_res)
                 if result:
                     accepted_combo, accepted_score = result
@@ -1022,8 +1266,11 @@ def search_best_set_ils(all_patterns, n=16,
                   f"换出{len(removed)}个 换入{len(added)}个")
             for old_i, new_i in zip(sorted(removed), sorted(added)):
                 print(f"      - {names[old_i]}  +  {names[new_i]}")
+            prev_combo = best_combo
             best_combo = accepted_combo
             best_score = accepted_score
+            blocked_combo = prev_combo
+            blocked_until_round = round_idx + backtrack_block_rounds
             if best_score > best_ever_score:
                 best_ever_combo = best_combo
                 best_ever_score = best_score
@@ -1033,7 +1280,11 @@ def search_best_set_ils(all_patterns, n=16,
             print(f"    [--] 本轮无接受（评测 {evaluated} 个, {elapsed:.0f}s），降温继续")
 
         temp *= cooling
+        refresh_ckpt_state()
+        save_ckpt()
 
+    refresh_ckpt_state()
+    save_ckpt()
     elapsed_total = time.time() - t_total
     print(f"\n  SA 完成：{round_idx} 轮，总用时 {elapsed_total:.0f}s，"
           f"共评测 {len(all_results)} 组")
@@ -1058,6 +1309,60 @@ def search_best_set_ils(all_patterns, n=16,
             json.dumps(meta, indent=2, ensure_ascii=False))
 
     return best_patterns, best_ever_score, all_results
+
+
+def search_best_set_multistart(all_patterns, start_specs, n=16,
+                               scales=None, weights=None, seeds=(0, 1, 2),
+                               exe_path=None, workers=None,
+                               temp_init=0.02, temp_min=1e-4, cooling=0.92,
+                               checkpoint_path=None, out_dir=None,
+                               eval_timeout=None):
+    if not start_specs:
+        raise ValueError("start_specs 不能为空")
+
+    global_results = {}
+    best_patterns = None
+    best_score = -1.0
+    ckpt_base = Path(checkpoint_path) if checkpoint_path else None
+
+    for idx, (label, start_combo) in enumerate(start_specs, 1):
+        run_ckpt = None
+        run_out_dir = None
+        if ckpt_base is not None:
+            run_ckpt = ckpt_base.with_name(f"{ckpt_base.stem}_{idx:02d}_{label}{ckpt_base.suffix}")
+        if out_dir:
+            run_out_dir = Path(out_dir) / "_restarts" / f"{idx:02d}_{label}"
+        print(f"\n[Restart {idx}/{len(start_specs)}] start={label} first4={list(start_combo)[:4]}")
+        selected, score, run_results = search_best_set_ils(
+            all_patterns, n=n,
+            scales=scales, weights=weights, seeds=seeds,
+            exe_path=exe_path, workers=workers,
+            start_combo_indices=start_combo,
+            bootstrap_results=global_results,
+            resume_checkpoint_state=True,
+            temp_init=temp_init, temp_min=temp_min, cooling=cooling,
+            checkpoint_path=str(run_ckpt) if run_ckpt else None,
+            out_dir=str(run_out_dir) if run_out_dir else None,
+            eval_timeout=eval_timeout,
+        )
+        global_results.update(run_results)
+        print(f"  [Restart {idx}] score={score:.4f}")
+        if score > best_score:
+            best_patterns = selected
+            best_score = score
+            if out_dir:
+                save_patterns(best_patterns, out_dir)
+                meta = [{"idx": i, "name": nm, "fill": int(mask.sum())}
+                        for i, (nm, mask) in enumerate(best_patterns)]
+                (Path(out_dir) / "meta.json").write_text(
+                    json.dumps({
+                        "best_score": best_score,
+                        "source_restart": label,
+                        "patterns": meta,
+                    }, indent=2, ensure_ascii=False),
+                    encoding='utf-8')
+
+    return best_patterns, best_score, global_results
 
 
 
@@ -1119,6 +1424,23 @@ def save_patterns(patterns, out_dir):
 # main
 # ══════════════════════════════════════════════════════════════════════════════
 
+def load_seed_patterns(seed_dir, prefix="seedbest"):
+    seed_dir = Path(seed_dir)
+    if not seed_dir.exists():
+        return []
+
+    patterns = []
+    for png in sorted(seed_dir.glob('*.png')):
+        if png.stem.lower() == 'preview':
+            continue
+        img = cv2.imread(str(png), cv2.IMREAD_GRAYSCALE)
+        if img is None or img.shape != (TILE_SIZE, TILE_SIZE):
+            continue
+        mask = (img < 128).astype(np.uint8)
+        patterns.append((f"{prefix}_{png.stem}", mask))
+    return patterns
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n",          type=int, default=16)
@@ -1136,19 +1458,34 @@ def main():
     ap.add_argument("--no-font",    action="store_true")
     ap.add_argument("--no-cimbar",  action="store_true")
     ap.add_argument("--no-ours",    action="store_true")
+    ap.add_argument("--seed-dir",   default="", help="seed pattern dir")
+    ap.add_argument("--random-starts", type=int, default=2,
+                    help="16-pattern 模式额外加入多少个随机多样性起点（默认 2）")
+    ap.add_argument("--rng-seed", type=int, default=12345,
+                    help="随机起点构造的随机种子")
+    ap.add_argument("--eval-timeout", type=float, default=0.0,
+                    help="单次 eval_patterns.exe 调用超时秒数，<=0 表示不设超时")
     args = ap.parse_args()
 
     # 提前创建输出目录（checkpoint 也写在这里）
     Path(args.out).mkdir(parents=True, exist_ok=True)
 
-    workers = args.workers or max(1, cpu_count() - 1)
+    workers = args.workers or DEFAULT_WORKERS
     seeds   = tuple(int(s) for s in args.seeds.split(','))
     exe     = args.eval_exe or _DEFAULT_EVAL_EXE
+    eval_timeout = None if args.eval_timeout <= 0 else args.eval_timeout
     print(f"使用 eval_patterns.exe: {exe}")
     print(f"评测档位: {EVAL_SCALES}  权重: {EVAL_WEIGHTS}  种子: {seeds}")
+    print(f"eval_timeout: {'none' if eval_timeout is None else eval_timeout}")
 
+    print(f"score_weights: {EVAL_SCORE_WEIGHTS}")
     # ── 构建候选池 ───────────────────────────────────────────────
     all_patterns = []
+
+    seed_patterns = load_seed_patterns(args.seed_dir) if args.seed_dir else []
+    if seed_patterns:
+        print(f"\n[seed] loaded {len(seed_patterns)} seed patterns from {args.seed_dir}")
+        all_patterns += seed_patterns
 
     if not args.no_ours:
         print("\n[1] 生成当前系统 pattern...")
@@ -1201,10 +1538,19 @@ def main():
         # 32-pattern 三阶段：
         #   阶段A：贪心，锁定 cimbar 16个，逐个添加最优自由 pattern 直到32个
         #   阶段B：ILS，解锁全部32个，以阶段A结果为起点，替换掉不优的 cimbar
+        seed_idx = [i for i, (nm, _) in enumerate(deduped) if nm.startswith('seedbest_')]
         cimbar_idx = [i for i, (nm, _) in enumerate(deduped) if nm.startswith('cimbar_')]
-        fixed_indices = tuple(cimbar_idx[:16]) if len(cimbar_idx) >= 16 else tuple(range(16))
+        if len(cimbar_idx) >= 16:
+            fixed_indices = tuple(cimbar_idx[:16])
+            fixed_tag = 'cimbar'
+        elif len(seed_idx) >= 16:
+            fixed_indices = tuple(seed_idx[:16])
+            fixed_tag = 'seedbest'
+        else:
+            fixed_indices = tuple(range(16))
+            fixed_tag = 'fallback'
 
-        print(f"\n[Stage 2A] 贪心扩展：锁定 {len(fixed_indices)} 个 cimbar，逐步添加 {args.n - len(fixed_indices)} 个自由 pattern...")
+        print(f"\n[Stage 2A] greedy expand: lock {len(fixed_indices)} {fixed_tag}, add {args.n - len(fixed_indices)} free patterns...")
         ckpt_a = Path(args.out) / "checkpoint_phase_a.json"
         selected_a, score_a, _ = search_greedy_expand(
             deduped,
@@ -1215,6 +1561,7 @@ def main():
             workers=workers,
             checkpoint_path=str(ckpt_a),
             out_dir=out_dir_rt,
+            eval_timeout=eval_timeout,
         )
         print(f"  阶段A得分: {score_a:.4f}")
 
@@ -1229,17 +1576,25 @@ def main():
             temp_init=args.temp_init, temp_min=args.temp_min, cooling=args.cooling,
             checkpoint_path=str(ckpt_b),
             out_dir=out_dir_rt,
+            eval_timeout=eval_timeout,
         )
     else:
-        # 16-pattern：SA 搜索，起点 = cimbar
+        # 16-pattern：多起点 SA 搜索
+        start_specs = build_start_combos(
+            deduped, args.n,
+            random_starts=args.random_starts,
+            rng_seed=args.rng_seed,
+        )
         print(f"\n[Stage 2] SA 搜索最优 {args.n}-pattern 组合...")
-        selected, best_score, _ = search_best_set_ils(
-            deduped, n=args.n,
+        print(f"  多起点: {[label for label, _ in start_specs]}")
+        selected, best_score, _ = search_best_set_multistart(
+            deduped, start_specs=start_specs, n=args.n,
             scales=EVAL_SCALES, weights=EVAL_WEIGHTS, seeds=seeds,
-            exe_path=exe,
+            exe_path=exe, workers=workers,
             temp_init=args.temp_init, temp_min=args.temp_min, cooling=args.cooling,
             checkpoint_path=str(ckpt),
             out_dir=out_dir_rt,
+            eval_timeout=eval_timeout,
         )
 
     # ── 输出 ────────────────────────────────────────────────────

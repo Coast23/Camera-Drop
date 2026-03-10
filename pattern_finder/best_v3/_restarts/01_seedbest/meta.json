@@ -1,0 +1,85 @@
+{
+  "best_score": 0.87892,
+  "patterns": [
+    {
+      "idx": 0,
+      "name": "seedbest_00",
+      "fill": 24
+    },
+    {
+      "idx": 1,
+      "name": "seedbest_01",
+      "fill": 36
+    },
+    {
+      "idx": 2,
+      "name": "seedbest_02",
+      "fill": 36
+    },
+    {
+      "idx": 3,
+      "name": "seedbest_03",
+      "fill": 36
+    },
+    {
+      "idx": 4,
+      "name": "seedbest_04",
+      "fill": 36
+    },
+    {
+      "idx": 5,
+      "name": "seedbest_05",
+      "fill": 40
+    },
+    {
+      "idx": 6,
+      "name": "seedbest_06",
+      "fill": 40
+    },
+    {
+      "idx": 7,
+      "name": "seedbest_07",
+      "fill": 36
+    },
+    {
+      "idx": 8,
+      "name": "seedbest_08",
+      "fill": 22
+    },
+    {
+      "idx": 9,
+      "name": "seedbest_09",
+      "fill": 23
+    },
+    {
+      "idx": 10,
+      "name": "seedbest_0a",
+      "fill": 40
+    },
+    {
+      "idx": 11,
+      "name": "seedbest_0b",
+      "fill": 32
+    },
+    {
+      "idx": 12,
+      "name": "seedbest_0c",
+      "fill": 32
+    },
+    {
+      "idx": 13,
+      "name": "seedbest_0d",
+      "fill": 32
+    },
+    {
+      "idx": 14,
+      "name": "seedbest_0f",
+      "fill": 40
+    },
+    {
+      "idx": 15,
+      "name": "psf_LatArCyrHeb-08_369",
+      "fill": 31
+    }
+  ]
+}
