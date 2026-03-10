@@ -31,7 +31,7 @@ struct Options {
     std::string pattern_dir = "pattern_finder/best_v2";
     bool capture_deskewed = false;
     bool source_deskewed = false;
-    bool patch_track = true;
+    bool patch_track = false;
 };
 
 struct FrameData {
@@ -287,7 +287,7 @@ int main(int argc, char** argv) {
             camdrop::vision::FramePipelineConfig cfg;
             cfg.model_path = opts.model_path;
             cfg.pattern_dir = opts.pattern_dir;
-            cfg.patch_track_enabled = opts.patch_track;
+            cfg.patch_track_enabled = false;
             capture_pipeline.emplace(cfg);
         }
 
