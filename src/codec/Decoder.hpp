@@ -22,11 +22,23 @@ public:
         uint32_t fountain_blocks_decode_error = 0;
     };
 
-    Decoder() : fountain_decoder_(std::make_unique<FountainDecoder>()) {}
+    Decoder() : fountain_decoder_(std::make_unique<FountainDecoder>()) {
+        if (!fountain_decoder_) {
+            throw DecoderInitError("Failed to create fountain decoder");
+        }
+    }
 
     // 处理一整帧接受到的图像数据
-    // TODO: 函数改名 process_frame_data()
     bool process_packet(const std::vector<uint8_t>& frame_data, ProcessPacketStats* stats = nullptr){
+        if (frame_data.empty()) {
+            return false;
+        }
+        
+        if (frame_data.size() < Config::PACKET_CAPACITY) {
+            if (stats) stats->rs_blocks_fail++;
+            return false;
+        }
+
         std::vector<uint8_t> decoded_data;
         bool accepted_any = false;
 
@@ -51,7 +63,15 @@ public:
                 offset += Config::RS_BLOCK_SIZE;
 
                 if(packet_valid){
-                    std::vector<uint8_t> decoded = rs_decoder.decode(rs_block);
+                    std::vector<uint8_t> decoded;
+                    try {
+                        decoded = rs_decoder.decode(rs_block);
+                    } catch (const RSError& e) {
+                        packet_valid = false;
+                        if(stats) stats->rs_blocks_fail++;
+                        continue;
+                    }
+                    
                     if(decoded.empty()){
                         packet_valid = false;
                         if(stats) stats->rs_blocks_fail++;
@@ -60,36 +80,58 @@ public:
                         if(stats) stats->rs_blocks_ok++;
                         decoded_payload.insert(
                             decoded_payload.end(),
-                            decoded.begin(),
-                            decoded.end()
+                            decoded.begin(), decoded.end()
                         );
                     }
                 }
             }
 
-            if(packet_valid and decoded_payload.size() == Config::FOUNTAIN_PAYLOAD_SIZE){
+            if(packet_valid && decoded_payload.size() == Config::FOUNTAIN_PAYLOAD_SIZE){
                 DataPacket packet;
-                if(packet.deserialize(decoded_payload.data(), decoded_payload.size())){
-                    if(stats) stats->fountain_packets_crc_ok++;
-                    const auto add_result = fountain_decoder_->add_block_ex(packet);
-                    if(add_result == FountainDecoder::AddBlockResult::NeedMore){
+                try {
+                    if(!packet.deserialize(decoded_payload.data(), decoded_payload.size())){
+                        if(stats) stats->fountain_packets_crc_fail++;
+                        continue;
+                    }
+                } catch (const DataPacketError& e) {
+                    if(stats) stats->fountain_packets_crc_fail++;
+                    continue;
+                }
+                
+                if(stats) stats->fountain_packets_crc_ok++;
+                
+                FountainDecoder::AddBlockResult add_result;
+                try {
+                    add_result = fountain_decoder_->add_block_ex(packet);
+                } catch (const FountainError& e) {
+                    if(stats) stats->fountain_blocks_decode_error++;
+                    continue;
+                }
+                
+                switch (add_result) {
+                    case FountainDecoder::AddBlockResult::NeedMore:
                         accepted_any = true;
                         if(stats) stats->fountain_blocks_added++;
-                    }
-                    else if(add_result == FountainDecoder::AddBlockResult::Complete){
+                        break;
+                    case FountainDecoder::AddBlockResult::Complete:
                         accepted_any = true;
                         if(stats) {
                             stats->fountain_blocks_added++;
                             stats->fountain_blocks_completed++;
                         }
-                    }
-                    else if(stats){
-                        if(add_result == FountainDecoder::AddBlockResult::Duplicate) stats->fountain_blocks_duplicate++;
-                        else if(add_result == FountainDecoder::AddBlockResult::FileMismatch) stats->fountain_blocks_file_mismatch++;
-                        else if(add_result == FountainDecoder::AddBlockResult::DecodeError) stats->fountain_blocks_decode_error++;
-                    }
-                } else if(stats){
-                    stats->fountain_packets_crc_fail++;
+                        break;
+                    case FountainDecoder::AddBlockResult::Duplicate:
+                        if(stats) stats->fountain_blocks_duplicate++;
+                        break;
+                    case FountainDecoder::AddBlockResult::FileMismatch:
+                        if(stats) stats->fountain_blocks_file_mismatch++;
+                        break;
+                    case FountainDecoder::AddBlockResult::DecodeError:
+                        if(stats) stats->fountain_blocks_decode_error++;
+                        break;
+                    case FountainDecoder::AddBlockResult::InitFailed:
+                        if(stats) stats->fountain_blocks_decode_error++;
+                        break;
                 }
             } else if(stats && decoded_payload.size() == Config::FOUNTAIN_PAYLOAD_SIZE){
                 stats->fountain_packets_crc_fail++;
@@ -102,17 +144,42 @@ public:
         return fountain_decoder_->is_complete();
     }
 
-    bool save_to_file(const std::string& filename){
-        if(!is_complete()) return false;
-        std::vector<uint8_t> data = fountain_decoder_->decode();
+    void save_to_file(const std::string& filename){
+        if(!is_complete()) {
+            throw DecoderRuntimeError("Decoding not complete, cannot save file");
+        }
+        
+        std::vector<uint8_t> data;
+        try {
+            data = fountain_decoder_->decode();
+        } catch (const FountainError& e) {
+            throw DecoderRuntimeError(std::string("Fountain decode failed: ") + e.what());
+        }
+        
+        if(data.empty()) {
+            throw DecoderRuntimeError("Fountain decoder returned empty data");
+        }
       
         ZstdDecompressor decompressor;
-        auto decompressed = decompressor.decompress(data.data(), data.size());
-        auto decompressed_data = decompressed.first;
-        //  if(data.empty()) return false;
+        std::pair<std::vector<uint8_t>, std::string> decompressed;
+        
+        try {
+            decompressed = decompressor.decompress(data.data(), data.size());
+        } catch (const DecompressError& e) {
+            throw DecoderRuntimeError(std::string("Decompression failed: ") + e.what());
+        }
+        
+        auto& decompressed_data = decompressed.first;
+        if(decompressed_data.empty()) {
+            throw DecoderRuntimeError("Decompressed data is empty");
+        }
+        
         FileWriter writer(filename);
-        if(!writer.is_open()) return false;
-        return writer.write(decompressed_data);
+        try {
+            writer.write(decompressed_data);
+        } catch (const FileWriteError& e) {
+            throw DecoderRuntimeError(std::string("Failed to write output file: ") + e.what());
+        }
     }
 
 private:

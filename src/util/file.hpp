@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config.hpp"
+#include "errors.hpp"
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -8,7 +9,12 @@
 
 class FileReader {
 public:
-    explicit FileReader(const std::string& filename) : file_(filename, std::ios::binary) {}
+    explicit FileReader(const std::string& filename) : filename_(filename), file_(filename, std::ios::binary) {
+        if (!file_.is_open()) {
+            throw FileOpenError(filename);
+        }
+    }
+    
     ~FileReader(){
         if(file_.is_open()) file_.close();
     }
@@ -19,17 +25,35 @@ public:
     
     // 读取 size 大小的数据（先无视 MAX_FILE_SIZE 限制）
     std::vector<uint8_t> read(size_t size){
+        if (!file_.is_open()) {
+            throw FileReadError(filename_);
+        }
+        
         std::vector<uint8_t> buffer(size);
         file_.read(reinterpret_cast<char*>(buffer.data()), size);
         size_t read_size = file_.gcount();
         buffer.resize(read_size);
+        
+        if (file_.bad()) {
+            throw FileReadError(filename_);
+        }
+        
         return buffer;
     }
 
     size_t file_size(){
+        if (!file_.is_open()) {
+            throw FileReadError(filename_);
+        }
+        
         file_.seekg(0, std::ios::end);
         size_t size = file_.tellg();
         file_.seekg(0, std::ios::beg);
+        
+        if (file_.fail()) {
+            throw FileReadError(filename_);
+        }
+        
         return size;
     }
 
@@ -38,10 +62,16 @@ public:
         size_t size = file_size();
 
         if(size > Config::MAX_FILE_SIZE){
-            // TODO: Throw an error or output warning message?
-            return {};
+            throw FileSizeError("File size " + std::to_string(size) + 
+                               " exceeds limit " + std::to_string(Config::MAX_FILE_SIZE));
         }
-        return read(size);
+        
+        auto data = read(size);
+        if (size != 0 && data.empty()) {
+            throw FileReadError(filename_);
+        }
+        
+        return data;
     }
 
     bool eof() const {
@@ -49,17 +79,30 @@ public:
     }
 
     void reset(){
+        if (!file_.is_open()) {
+            throw FileReadError(filename_);
+        }
         file_.clear();
         file_.seekg(0, std::ios::beg);
+        
+        if (file_.fail()) {
+            throw FileReadError(filename_);
+        }
     }
 
 private:
+    std::string filename_;
     std::ifstream file_;
 };
 
 class FileWriter {
 public:
-    explicit FileWriter(const std::string& filename) : file_(filename, std::ios::binary) {}     
+    explicit FileWriter(const std::string& filename) : filename_(filename), file_(filename, std::ios::binary) {
+        if (!file_.is_open()) {
+            throw FileOpenError(filename);
+        }
+    }
+    
     ~FileWriter(){
         if(file_.is_open()) file_.close();
     }
@@ -69,16 +112,24 @@ public:
     }
 
     // 写入 size 大小的数据
-    bool write(const uint8_t* data, size_t size){
+    void write(const uint8_t* data, size_t size){
+        if (!file_.is_open()) {
+            throw FileWriteError(filename_);
+        }
+        
         file_.write(reinterpret_cast<const char*>(data), size);
-        return file_.good();
+        
+        if (!file_.good()) {
+            throw FileWriteError(filename_);
+        }
     }
 
     // 全部写入
-    bool write(const std::vector<uint8_t>& data){
-        return write(data.data(), data.size());
+    void write(const std::vector<uint8_t>& data){
+        write(data.data(), data.size());
     }
 
 private:
+    std::string filename_;
     std::ofstream file_;
 };

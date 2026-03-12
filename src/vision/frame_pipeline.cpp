@@ -7,13 +7,18 @@
 #include <opencv2/imgproc.hpp>
 
 #include "vision/deskew.hpp"
+#include "util/errors.hpp"
 
 namespace camdrop::vision {
 
 FramePipeline::FramePipeline(const FramePipelineConfig& config)
     : config_(config),
       localizer_(config.model_path, config.localizer_options),
-      recognizer_(PatternDictionary::LoadFromDirectory(config.pattern_dir), config.recognizer_options) {}
+      recognizer_(PatternDictionary::LoadFromDirectory(config.pattern_dir), config.recognizer_options) {
+    if (config.pattern_dir.empty()) {
+        throw VisionInitError("Empty pattern directory");
+    }
+}
 
 namespace {
 
@@ -156,14 +161,21 @@ PipelineResult FramePipeline::Process(const cv::Mat& frame) {
     }
 
     result.localized = true;
-    result.deskewed_image = Deskewer::Deskew(
-        frame,
-        corners,
-        config_.deskew_width,
-        config_.deskew_height,
-        config_.deskew_expand,
-        config_.deskew_canonical_inset,
-        cv::INTER_NEAREST);
+    
+    try {
+        result.deskewed_image = Deskewer::Deskew(
+            frame,
+            corners,
+            config_.deskew_width,
+            config_.deskew_height,
+            config_.deskew_expand,
+            config_.deskew_canonical_inset,
+            cv::INTER_NEAREST);
+    } catch (const VisionDeskewError& e) {
+        clear_patches();
+        return result;
+    }
+    
     result.deskewed = !result.deskewed_image.empty();
     if (!result.deskewed) {
         return result;

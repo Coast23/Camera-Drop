@@ -6,6 +6,8 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include "util/errors.hpp"
+
 namespace camdrop::vision {
 namespace {
 
@@ -50,6 +52,14 @@ uint16_t compress_mask64_to_16(uint32_t lo, uint32_t hi) {
 }
 
 uint64_t mask_from_8x8_gray(const cv::Mat& gray8) {
+    if (gray8.empty()) {
+        throw PatternDictError("Empty image in mask_from_8x8_gray");
+    }
+    
+    if (gray8.rows != 8 || gray8.cols != 8) {
+        throw PatternDictError("Expected 8x8 image, got " + std::to_string(gray8.cols) + "x" + std::to_string(gray8.rows));
+    }
+    
     uint64_t mask = 0;
     for (int r = 0; r < 8; ++r) {
         const uint8_t* row = gray8.ptr<uint8_t>(r);
@@ -69,6 +79,10 @@ int PatternDictionary::pattern_bits() const {
 }
 
 PatternDictionary PatternDictionary::LoadFromDirectory(const std::string& dir) {
+    if (dir.empty()) {
+        throw PatternDictLoadError("Empty directory path");
+    }
+    
     PatternDictionary dict;
     dict.masks64.resize(16);
     dict.lo.resize(16);
@@ -81,11 +95,18 @@ PatternDictionary PatternDictionary::LoadFromDirectory(const std::string& dir) {
         const std::string path = dir + "/" + name;
         cv::Mat gray = cv::imread(path, cv::IMREAD_GRAYSCALE);
         if (gray.empty()) {
-            throw std::runtime_error("failed to load pattern image: " + path);
+            throw PatternDictLoadError("Failed to load pattern image: " + path);
         }
         cv::Mat gray8;
         cv::resize(gray, gray8, cv::Size(8, 8), 0.0, 0.0, cv::INTER_NEAREST);
-        const uint64_t mask = mask_from_8x8_gray(gray8);
+        
+        uint64_t mask;
+        try {
+            mask = mask_from_8x8_gray(gray8);
+        } catch (const PatternDictError& e) {
+            throw PatternDictLoadError(std::string("Failed to process pattern ") + name + ": " + e.what());
+        }
+        
         const auto parts = split_mask64(mask);
         dict.masks64[i] = mask;
         dict.lo[i] = parts.first;

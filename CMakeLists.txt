@@ -116,9 +116,6 @@ if(CAMDROP_BUILD_ORT_PIPELINE)
     find_package_handle_standard_args(ONNXRuntime
         REQUIRED_VARS ONNXRUNTIME_INCLUDE_DIR ONNXRUNTIME_LIBRARY
     )
-    if(NOT ONNXRuntime_FOUND)
-        message(FATAL_ERROR "ONNX Runtime not found. Set ONNXRUNTIME_ROOT to its installation directory.")
-    endif()
     if(NOT TARGET onnxruntime::onnxruntime)
         add_library(onnxruntime::onnxruntime UNKNOWN IMPORTED)
         set_target_properties(onnxruntime::onnxruntime PROPERTIES

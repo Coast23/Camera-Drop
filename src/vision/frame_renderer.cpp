@@ -5,6 +5,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "util/config.hpp"
+#include "util/errors.hpp"
 #include "vision/visual_frame_codec.hpp"
 
 namespace camdrop::vision {
@@ -69,7 +70,8 @@ void draw_symbol_tile(cv::Mat& img,
     const int pat_idx = symbol & pat_mask;
     const int color_idx = symbol >> dict.pattern_bits();
     if (pat_idx < 0 || pat_idx >= dict.size()) {
-        throw std::runtime_error("symbol pattern index out of range");
+        throw ImageFormatError("Symbol pattern index " + std::to_string(pat_idx) + 
+                              " out of range [0, " + std::to_string(dict.size()) + ")");
     }
     const uint64_t mask = dict.masks64[pat_idx];
     const cv::Vec3b color = get_color_bgr(color_idx);
@@ -86,11 +88,12 @@ void draw_symbol_tile(cv::Mat& img,
 
 void validate_dict(const PatternDictionary& dict) {
     if (dict.empty()) {
-        throw std::runtime_error("pattern dictionary is empty");
+        throw PatternDictInvalidError("Pattern dictionary is empty");
     }
     const int size = dict.size();
     if ((size & (size - 1)) != 0) {
-        throw std::runtime_error("pattern dictionary size must be a power of two");
+        throw PatternDictInvalidError("Pattern dictionary size " + std::to_string(size) + 
+                                     " is not a power of two");
     }
 }
 
@@ -102,12 +105,19 @@ PatternFrameRenderer::PatternFrameRenderer(PatternDictionary dict)
 }
 
 cv::Mat PatternFrameRenderer::Render(const std::vector<uint8_t>& frame_bytes) const {
-    return RenderInterleavedSymbols(FrameBytesToInterleavedSymbols(frame_bytes));
+    std::vector<uint8_t> symbols;
+    try {
+        symbols = FrameBytesToInterleavedSymbols(frame_bytes);
+    } catch (const ImageError& e) {
+        throw ImageFormatError(std::string("Failed to convert frame bytes: ") + e.what());
+    }
+    return RenderInterleavedSymbols(symbols);
 }
 
 cv::Mat PatternFrameRenderer::RenderInterleavedSymbols(const std::vector<uint8_t>& interleaved_symbols) const {
     if (interleaved_symbols.size() != Config::UINTS_COUNT) {
-        throw std::runtime_error("render symbol count mismatch");
+        throw ImageSizeError("Render symbol count " + std::to_string(interleaved_symbols.size()) + 
+                            " != UINTS_COUNT " + std::to_string(Config::UINTS_COUNT));
     }
 
     cv::Mat img = cv::Mat::zeros(Config::IMG_HEIGHT, Config::IMG_WIDTH, CV_8UC3);
@@ -131,7 +141,8 @@ cv::Mat PatternFrameRenderer::RenderInterleavedSymbols(const std::vector<uint8_t
     }
 
     if (idx != interleaved_symbols.size()) {
-        throw std::runtime_error("render symbol layout mismatch");
+        throw ImageFormatError("Render symbol layout mismatch: processed " + std::to_string(idx) + 
+                              " symbols, expected " + std::to_string(interleaved_symbols.size()));
     }
     return img;
 }

@@ -2,6 +2,7 @@
 
 #include "util/config.hpp"
 #include "util/DataPacket.hpp"
+#include "util/errors.hpp"
 extern "C" {
     #include <wirehair/wirehair.h>
 }
@@ -17,7 +18,7 @@ inline void wirehair_init_once(){
     static std::once_flag flag;
     std::call_once(flag, [](){
         if(wirehair_init() != Wirehair_Success) {
-            throw std::runtime_error("Failed to initialize Wirehair library");
+            throw FountainInitError("Failed to initialize Wirehair library");
         }
     });
 }
@@ -27,11 +28,24 @@ public:
     FountainEncoder(const std::vector<uint8_t>& data, uint32_t original_size, uint8_t encode_id = 0) 
         : data_(data), encode_id_(encode_id), block_cnt_(0), original_size_(original_size) {
         
-            wirehair_init_once();
+        if (data.empty()) {
+            throw FountainInitError("Cannot create encoder with empty data");
+        }
+        
+        if (Config::FOUNTAIN_CHUNK_SIZE == 0) {
+            throw FountainInitError("FOUNTAIN_CHUNK_SIZE not configured, call Config::auto_config() first");
+        }
+        
+        wirehair_init_once();
 
         codec_ = wirehair_encoder_create(
             nullptr, data_.data(), data_.size(), Config::FOUNTAIN_CHUNK_SIZE);
+            
+        if (!codec_) {
+            throw FountainInitError("Failed to create Wirehair encoder");
+        }
     }
+    
     ~FountainEncoder(){
         if(codec_) wirehair_free(codec_);
     }
@@ -42,9 +56,13 @@ public:
 
     // 编码一个块
     DataPacket encode_block(){
+        if (!codec_) {
+            throw FountainEncodeError("Encoder not initialized");
+        }
+        
         DataPacket packet;
         FountainMetadata meta;
-        meta.file_size = data_.size();
+        meta.file_size = static_cast<uint32_t>(data_.size());
         meta.block_id = block_cnt_++;
         meta.original_size = original_size_;
         packet.set_metadata(meta);
@@ -60,8 +78,7 @@ public:
         );
 
         if(result != Wirehair_Success){
-            // TODO: Throw exception?
-            chunk.clear();
+            throw FountainEncodeError("Wirehair encode failed with error: " + std::to_string(result));
         }
 
         packet.set_data(chunk);
@@ -70,7 +87,10 @@ public:
 
     // 计算需要的最少块数
     uint32_t blocks_required() const {
-        return (data_.size() + Config::FOUNTAIN_CHUNK_SIZE - 1) / Config::FOUNTAIN_CHUNK_SIZE;
+        if (Config::FOUNTAIN_CHUNK_SIZE == 0) {
+            throw FountainError("FOUNTAIN_CHUNK_SIZE not configured");
+        }
+        return static_cast<uint32_t>((data_.size() + Config::FOUNTAIN_CHUNK_SIZE - 1) / Config::FOUNTAIN_CHUNK_SIZE);
     }
 
     // 丢包率下的建议块数
@@ -101,6 +121,7 @@ public:
         : codec_(nullptr), file_size_(0), original_size_(0), init_(false), is_complete_(false) {
             wirehair_init_once();
     }
+    
     ~FountainDecoder(){
         if(codec_) wirehair_free(codec_);
     }
@@ -114,7 +135,16 @@ public:
         if(is_complete_) return AddBlockResult::Complete;
 
         const FountainMetadata& meta = packet.metadata();
+        
+        if (meta.file_size == 0) {
+            throw FountainDecodeError("Invalid packet: file_size is 0");
+        }
+        
         if(!init_){
+            if (Config::FOUNTAIN_CHUNK_SIZE == 0) {
+                throw FountainInitError("FOUNTAIN_CHUNK_SIZE not configured");
+            }
+            
             file_size_ = meta.file_size;
             original_size_ = meta.original_size;
             codec_ = wirehair_decoder_create(
@@ -158,7 +188,13 @@ public:
 
     // 获取解码后的数据
     std::vector<uint8_t> decode() const {
-        if(!is_complete() || file_size_ == 0) return {};
+        if(!is_complete()) {
+            throw FountainDecodeError("Decoding not complete");
+        }
+        
+        if(file_size_ == 0) {
+            throw FountainDecodeError("Invalid file size (0)");
+        }
 
         std::vector<uint8_t> recovered(file_size_);
         WirehairResult result = wirehair_recover(
@@ -167,10 +203,11 @@ public:
             file_size_
         );
 
-        if(result != Wirehair_Success) return {}; // TODO: Throw an exception?
+        if(result != Wirehair_Success) {
+            throw FountainDecodeError("Wirehair recover failed with error: " + std::to_string(result));
+        }
        
         recovered.resize(original_size_);
-
         return recovered;
     }
 

@@ -16,6 +16,7 @@
 
 #include "codec/Decoder.hpp"
 #include "util/config.hpp"
+#include "util/errors.hpp"
 #include "vision/frame_pipeline.hpp"
 #include "vision/pattern_dict.hpp"
 #include "vision/recognizer.hpp"
@@ -133,14 +134,14 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--no-patch-track") {
             opts.patch_track = false;
         } else {
-            throw std::runtime_error("unknown argument: " + arg);
+            throw ConfigInvalidError("Unknown argument: " + arg);
         }
     }
     if (opts.input_path.empty()) {
-        throw std::runtime_error("missing --input");
+        throw ConfigInvalidError("Missing --input");
     }
     if (!(opts.acc > 0.0 && opts.acc <= 1.0)) {
-        throw std::runtime_error("acc must be in (0, 1]");
+        throw ConfigRangeError("Accuracy must be in (0, 1], got " + std::to_string(opts.acc));
     }
     return opts;
 }
@@ -163,7 +164,7 @@ void decode_image_list(const std::vector<fs::path>& files, HandleFrameFn&& handl
     for (const auto& file : files) {
         const cv::Mat image = cv::imread(file.string(), cv::IMREAD_COLOR);
         if (image.empty()) {
-            std::cerr << "skip unreadable image: " << file.string() << '\n';
+            std::cerr << "Skip unreadable image: " << file.string() << '\n';
             continue;
         }
         if (!handle_frame(image, file.filename().string())) {
@@ -176,7 +177,7 @@ template <typename HandleFrameFn>
 void decode_video_file(const fs::path& file, HandleFrameFn&& handle_frame) {
     cv::VideoCapture cap(file.string());
     if (!cap.isOpened()) {
-        throw std::runtime_error("failed to open video: " + file.string());
+        throw FileOpenError("Failed to open video: " + file.string());
     }
     cv::Mat frame;
     uint64_t idx = 0;
@@ -195,7 +196,9 @@ void maybe_dump_deskew(const cv::Mat& image, const std::string& name, const std:
     }
     fs::create_directories(dump_dir);
     const fs::path out = fs::path(dump_dir) / (name + "_deskewed.png");
-    cv::imwrite(out.string(), image);
+    if (!cv::imwrite(out.string(), image)) {
+        std::cerr << "Warning: Failed to write debug image: " << out.string() << '\n';
+    }
 }
 
 }  // namespace
@@ -299,12 +302,19 @@ int main(int argc, char** argv) {
                     ++stats.accepted_frames;
                 }
                 if (decoder.is_complete()) {
-                    completed = decoder.save_to_file(opts.output_file);
+                    try {
+                        completed = decoder.save_to_file(opts.output_file);
+                    } catch (const DecoderRuntimeError& e) {
+                        std::cerr << "Frame " << name << " decode failed: " << e.what() << '\n';
+                        return true;
+                    }
                     completed_at_frame = stats.total_frames;
                     return false;
                 }
+            } catch (const CameraDropError& ex) {
+                std::cerr << "Frame " << name << " failed: " << ex.what() << '\n';
             } catch (const std::exception& ex) {
-                std::cerr << "frame " << name << " failed: " << ex.what() << '\n';
+                std::cerr << "Frame " << name << " failed: " << ex.what() << '\n';
             }
             return true;
         };
@@ -313,7 +323,7 @@ int main(int argc, char** argv) {
         if (fs::is_directory(input)) {
             const std::vector<fs::path> files = collect_input_images(input, opts.deskewed_input);
             if (files.empty()) {
-                throw std::runtime_error("no images found in input dir");
+                throw FileNotFoundError("No images found in input dir: " + input.string());
             }
             decode_image_list(files, handle_frame);
         } else {
@@ -355,8 +365,11 @@ int main(int argc, char** argv) {
         std::cout << "decode complete at frame " << completed_at_frame
                   << " -> " << fs::absolute(opts.output_file).string() << '\n';
         return 0;
+    } catch (const CameraDropError& ex) {
+        std::cerr << "CameraDrop Error: " << ex.what() << '\n';
+        return 2;
     } catch (const std::exception& ex) {
-        std::cerr << ex.what() << '\n';
+        std::cerr << "Error: " << ex.what() << '\n';
         print_usage();
         return 1;
     }
