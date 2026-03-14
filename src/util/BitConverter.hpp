@@ -1,12 +1,18 @@
 #pragma once
 
+#include "errors.hpp"
 #include <vector>
 #include <cstdint>
 
 class BitConverter {
 public:
     static std::vector<uint8_t> convert_826(const uint8_t* data, size_t size){
-        if(!data or !size) return {};
+        if(!data && size > 0) {
+            throw BitConverterError("Null input pointer with non-zero size");
+        }
+        
+        if(!size) return {};
+        
         size_t new_size = (size * 8 + 5) / 6;
         std::vector<uint8_t> result(new_size, 0);
         
@@ -21,9 +27,21 @@ public:
 
     // 返回实际写入的字节数
     static size_t convert_826(const uint8_t* input, size_t in_size, uint8_t* output, size_t out_size){
-        if(!input or !output or !in_size or !out_size) return 0;
+        if(!input && in_size > 0) {
+            throw BitConverterError("Null input pointer with non-zero size");
+        }
+        
+        if(!output && out_size > 0) {
+            throw BitConverterError("Null output pointer with non-zero size");
+        }
+        
+        if(!in_size || !out_size) return 0;
+        
         size_t need = (in_size * 8 + 5) / 6;
-        if(out_size < need) return 0; // TODO: 改为尝试填充？
+        if(out_size < need) {
+            throw BitConverterSizeError("Output buffer too small: need " + std::to_string(need) + 
+                                        ", got " + std::to_string(out_size));
+        }
         
         size_t i = 0;
         size_t out_idx = 0;
@@ -55,7 +73,12 @@ public:
     // =======================================================
 
     static std::vector<uint8_t> convert_628(const uint8_t* data, size_t size){
-        if(!data or !size) return {};
+        if(!data && size > 0) {
+            throw BitConverterError("Null input pointer with non-zero size");
+        }
+        
+        if(!size) return {};
+        
         size_t new_size = (size * 3) / 4;
         std::vector<uint8_t> result(new_size, 0);
         
@@ -69,9 +92,21 @@ public:
     }
 
     static size_t convert_628(const uint8_t* input, size_t in_size, uint8_t* output, size_t out_size){
-        if(!input or !output or !in_size or !out_size) return 0;
+        if(!input && in_size > 0) {
+            throw BitConverterError("Null input pointer with non-zero size");
+        }
+        
+        if(!output && out_size > 0) {
+            throw BitConverterError("Null output pointer with non-zero size");
+        }
+        
+        if(!in_size || !out_size) return 0;
+        
         size_t need = (in_size * 3) / 4;
-        if(out_size < need) return 0; // TODO: 改为尝试填充？
+        if(out_size < need) {
+            throw BitConverterSizeError("Output buffer too small: need " + std::to_string(need) + 
+                                        ", got " + std::to_string(out_size));
+        }
         
         size_t i = 0;
         size_t out_idx = 0;

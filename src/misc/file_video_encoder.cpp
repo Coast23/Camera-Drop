@@ -12,6 +12,7 @@
 
 #include "codec/Encoder.hpp"
 #include "util/config.hpp"
+#include "util/errors.hpp"
 #include "vision/frame_renderer.hpp"
 #include "vision/pattern_dict.hpp"
 
@@ -85,26 +86,26 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--raw-frame-output") {
             opts.wrap_screen = false;
         } else {
-            throw std::runtime_error("unknown argument: " + arg);
+            throw ConfigInvalidError("Unknown argument: " + arg);
         }
     }
     if (opts.input_file.empty()) {
-        throw std::runtime_error("missing --input");
+        throw ConfigInvalidError("Missing --input");
     }
     if (opts.fps <= 0) {
-        throw std::runtime_error("fps must be > 0");
+        throw ConfigRangeError("FPS must be > 0, got " + std::to_string(opts.fps));
     }
     if (opts.repeat <= 0) {
-        throw std::runtime_error("repeat must be > 0");
+        throw ConfigRangeError("Repeat must be > 0, got " + std::to_string(opts.repeat));
     }
     if (!(opts.acc > 0.0 && opts.acc <= 1.0)) {
-        throw std::runtime_error("acc must be in (0, 1]");
+        throw ConfigRangeError("Accuracy must be in (0, 1], got " + std::to_string(opts.acc));
     }
     if (opts.screen_width <= 0 || opts.screen_height <= 0) {
-        throw std::runtime_error("screen size must be > 0");
+        throw ConfigRangeError("Screen size must be > 0");
     }
     if (!(opts.code_fit > 0.0 && opts.code_fit <= 1.0)) {
-        throw std::runtime_error("code-fit must be in (0, 1]");
+        throw ConfigRangeError("Code-fit must be in (0, 1], got " + std::to_string(opts.code_fit));
     }
     return opts;
 }
@@ -162,7 +163,7 @@ int main(int argc, char** argv) {
 
         Encoder encoder(opts.input_file);
         if (!encoder.is_valid()) {
-            throw std::runtime_error("encoder init failed");
+            throw EncoderInitError("Encoder initialization failed");
         }
 
         const uint32_t packet_count = encoder.packet_count_recommended();
@@ -191,15 +192,24 @@ int main(int argc, char** argv) {
         for (uint32_t logical = 0; logical < logical_frames; ++logical) {
             const std::vector<uint8_t> frame_bytes = encoder.get_packet();
             if (frame_bytes.size() != Config::PACKET_CAPACITY) {
-                throw std::runtime_error("encoder returned unexpected frame size");
+                throw EncoderRuntimeError("Encoder returned unexpected frame size: " + 
+                                         std::to_string(frame_bytes.size()) + " != " + 
+                                         std::to_string(Config::PACKET_CAPACITY));
             }
-            const cv::Mat image = compose_screen_frame(renderer.Render(frame_bytes), opts);
+            
+            cv::Mat image;
+            try {
+                image = compose_screen_frame(renderer.Render(frame_bytes), opts);
+            } catch (const ImageError& e) {
+                throw ImageWriteError(std::string("Failed to render frame: ") + e.what());
+            }
+            
             for (int rep = 0; rep < opts.repeat; ++rep) {
                 std::ostringstream name;
                 name << "frame_" << std::setfill('0') << std::setw(6) << frame_index++ << ".png";
                 const fs::path out_path = out_dir / name.str();
                 if (!cv::imwrite(out_path.string(), image)) {
-                    throw std::runtime_error("failed to write image: " + out_path.string());
+                    throw ImageWriteError("Failed to write image: " + out_path.string());
                 }
             }
             std::cout << "\rgenerated logical frame " << (logical + 1) << "/" << logical_frames << std::flush;
@@ -216,8 +226,11 @@ int main(int argc, char** argv) {
         }
 
         return 0;
+    } catch (const CameraDropError& ex) {
+        std::cerr << "CameraDrop Error: " << ex.what() << '\n';
+        return 2;
     } catch (const std::exception& ex) {
-        std::cerr << ex.what() << '\n';
+        std::cerr << "Error: " << ex.what() << '\n';
         print_usage();
         return 1;
     }

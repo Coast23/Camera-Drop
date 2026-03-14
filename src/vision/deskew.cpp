@@ -5,6 +5,8 @@
 
 #include <opencv2/imgproc.hpp>
 
+#include "util/errors.hpp"
+
 namespace camdrop::vision {
 namespace {
 
@@ -100,8 +102,17 @@ cv::Mat Deskewer::Deskew(const cv::Mat& frame,
                          int canonical_inset,
                          int interpolation) {
     if (frame.empty()) {
-        return {};
+        throw VisionDeskewError("Input frame is empty");
     }
+    
+    if (out_width <= 0 || out_height <= 0) {
+        throw VisionDeskewError("Invalid output dimensions: " + std::to_string(out_width) + "x" + std::to_string(out_height));
+    }
+    
+    if (!corners.valid()) {
+        throw VisionDeskewError("Invalid corner quad");
+    }
+    
     (void)interpolation;
 
     cv::Mat src;
@@ -112,7 +123,7 @@ cv::Mat Deskewer::Deskew(const cv::Mat& frame,
     } else if (frame.type() == CV_8UC1) {
         cv::cvtColor(frame, src, cv::COLOR_GRAY2BGR);
     } else {
-        return {};
+        throw VisionDeskewError("Unsupported input image type: " + std::to_string(frame.type()));
     }
 
     const cv::Point2f center(
@@ -136,7 +147,7 @@ cv::Mat Deskewer::Deskew(const cv::Mat& frame,
     std::array<cv::Point2f, 4> dst_pts = {e_tl, e_tr, e_bl, e_br};
     std::array<double, 8> h = {};
     if (!compute_homography(src_pts, dst_pts, h)) {
-        return {};
+        throw VisionDeskewError("Failed to compute homography matrix");
     }
 
     cv::Mat out(out_height, out_width, CV_8UC3, cv::Scalar(38, 38, 38));

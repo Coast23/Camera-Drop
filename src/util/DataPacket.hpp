@@ -1,10 +1,15 @@
 #pragma once
 #include "config.hpp"
+#include "errors.hpp"
 #include <vector>
 #include <cstring>
 #include <cstdint>
 
 inline uint32_t calculate_crc32(const uint8_t* data, size_t length){
+    if (!data && length > 0) {
+        throw DataPacketError("Null data pointer in CRC calculation");
+    }
+    
     uint32_t crc = 0xFFFFFFFF;
     for(size_t i = 0; i < length; ++i){
         crc ^= data[i];
@@ -21,12 +26,18 @@ struct FountainMetadata {
     uint16_t block_id;
 
     void serialize(uint8_t* buffer) const {
+        if (!buffer) {
+            throw DataPacketSerializeError("Null buffer in serialize");
+        }
         std::memcpy(buffer, &file_size, 4);
         std::memcpy(buffer + 4, &original_size, 4);
         std::memcpy(buffer + 8, &block_id, 2);
     }
  
     void deserialize(const uint8_t* buffer){
+        if (!buffer) {
+            throw DataPacketDeserializeError("Null buffer in deserialize");
+        }
         std::memcpy(&file_size, buffer, 4);
         std::memcpy(&original_size, buffer + 4, 4);
         std::memcpy(&block_id, buffer + 8, 2);
@@ -56,6 +67,11 @@ public:
     // 序列化为字节流
     // Header(10) + Payload + CRC32(4)
     std::vector<uint8_t> serialize() const {
+        if (data_.size() != Config::FOUNTAIN_CHUNK_SIZE) {
+            throw DataPacketSerializeError("Data size " + std::to_string(data_.size()) + 
+                                          " != FOUNTAIN_CHUNK_SIZE " + std::to_string(Config::FOUNTAIN_CHUNK_SIZE));
+        }
+        
         std::vector<uint8_t> result(Config::FOUNTAIN_HEADER_SIZE + data_.size() + 4);
         metadata_.serialize(result.data());
         std::memcpy(result.data() + Config::FOUNTAIN_HEADER_SIZE, data_.data(), data_.size());
@@ -68,15 +84,26 @@ public:
     // 从字节流反序列化
     // 检验 CRC 并剥离
     bool deserialize(const uint8_t* buffer, size_t size){
+        if (!buffer) {
+            throw DataPacketDeserializeError("Null buffer");
+        }
+        
         size_t expected_size = Config::FOUNTAIN_PAYLOAD_SIZE;
         
-        if(size < expected_size) return false;
+        if(size < expected_size) {
+            throw DataPacketDeserializeError("Buffer size " + std::to_string(size) + 
+                                            " < expected " + std::to_string(expected_size));
+        }
         
         // check crc32
         uint32_t actual_crc = calculate_crc32(buffer, expected_size - 4);
         uint32_t expected_crc;
         std::memcpy(&expected_crc, buffer + expected_size - 4, 4);
-        if(actual_crc != expected_crc) return false;
+        
+        if(actual_crc != expected_crc) {
+            throw DataPacketCRCError("CRC mismatch: expected " + std::to_string(expected_crc) + 
+                                    ", got " + std::to_string(actual_crc));
+        }
 
         metadata_.deserialize(buffer);
 
