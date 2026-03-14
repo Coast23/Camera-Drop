@@ -117,7 +117,7 @@ public:
         // 根据 RS 纠错能力计算 ECC。利用 3-sigma 原则计算
         double miu = best_N * p;
         double sigma = std::sqrt(best_N * p * (1 - p));
-        int E = static_cast<int>(std::ceil( miu + 3.05 * sigma));
+        uint32_t E = static_cast<uint32_t>(std::ceil(miu + 3.05 * sigma));
         
         if((E << 1) >= RS_BLOCK_SIZE){ // Oops
             throw std::runtime_error("The acc is too low to transmit data!");
@@ -166,7 +166,7 @@ public:
         printf("Redundancy factor: %.3f\n", REDUNDANCY_FACTOR);
         printf("Frame Capacity: %u bytes\n", PACKET_CAPACITY);
         printf("Effective Data: %u bytes/frame (%.2f%%)\n", effective_bytes_per_frame, efficiency);
-        printf("Max File Size : %.2f MB\n", actual_max_mb);
+    //    printf("Max File Size : %.2f MB\n", actual_max_mb);
         printf("---------------------------------------\n");
     }
 };

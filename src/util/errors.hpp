@@ -45,6 +45,12 @@ public:
         : FileError(msg) {}
 };
 
+class FileNotFoundError : public FileError {
+public:
+    explicit FileNotFoundError(const std::string& filename) 
+        : FileError("File not found: " + filename) {}
+};
+
 // 编码器相关异常
 class EncoderError : public CameraDropError {
 public:

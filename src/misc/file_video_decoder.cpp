@@ -303,7 +303,7 @@ int main(int argc, char** argv) {
                 }
                 if (decoder.is_complete()) {
                     try {
-                        completed = decoder.save_to_file(opts.output_file);
+                        decoder.save_to_file(opts.output_file);
                     } catch (const DecoderRuntimeError& e) {
                         std::cerr << "Frame " << name << " decode failed: " << e.what() << '\n';
                         return true;
