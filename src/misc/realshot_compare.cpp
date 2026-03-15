@@ -1,7 +1,9 @@
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <stdexcept>
@@ -18,6 +20,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include "util/parallel.hpp"
 #include "vision/frame_pipeline.hpp"
 
 namespace fs = std::filesystem;
@@ -32,6 +35,8 @@ struct Options {
     bool capture_deskewed = false;
     bool source_deskewed = false;
     bool patch_track = false;
+    int threads = 0;
+    int ort_threads = 1;
 };
 
 struct FrameData {
@@ -53,7 +58,8 @@ void print_usage() {
     std::cout
         << "Usage: realshot_compare --source-dir <dir> --capture-dir <dir>\n"
         << "                       [--model <onnx>] [--patterns <dir>]\n"
-        << "                       [--capture-deskewed] [--source-deskewed] [--no-patch-track]\n";
+        << "                       [--capture-deskewed] [--source-deskewed] [--no-patch-track]\n"
+        << "                       [--threads <n>] [--ort-threads <n>]\n";
 }
 
 Options parse_args(int argc, char** argv) {
@@ -74,6 +80,10 @@ Options parse_args(int argc, char** argv) {
             opts.source_deskewed = true;
         } else if (arg == "--no-patch-track") {
             opts.patch_track = false;
+        } else if (arg == "--threads" && i + 1 < argc) {
+            opts.threads = std::stoi(argv[++i]);
+        } else if (arg == "--ort-threads" && i + 1 < argc) {
+            opts.ort_threads = std::stoi(argv[++i]);
         } else {
             throw std::runtime_error("unknown argument: " + arg);
         }
@@ -177,15 +187,49 @@ FrameData process_file(const fs::path& path,
 }
 
 std::vector<FrameData> load_frames(const std::vector<fs::path>& files,
-                                   camdrop::vision::FramePipeline* pipeline,
-                                   camdrop::vision::PatternRecognizer* recognizer,
-                                   bool deskewed_input) {
-    std::vector<FrameData> out;
-    out.reserve(files.size());
-    for (size_t i = 0; i < files.size(); ++i) {
-        out.push_back(process_file(files[i], pipeline, recognizer, deskewed_input));
-        std::cout << "\rprocessed " << (i + 1) << "/" << files.size() << std::flush;
-    }
+                                   const std::string& model_path,
+                                   const std::string& pattern_dir,
+                                   bool deskewed_input,
+                                   size_t threads,
+                                   int ort_threads) {
+    struct Worker {
+        std::optional<camdrop::vision::FramePipeline> pipeline;
+        std::optional<camdrop::vision::PatternRecognizer> recognizer;
+    };
+
+    std::vector<FrameData> out(files.size());
+    std::atomic<size_t> done{0};
+    std::mutex log_mu;
+
+    camdrop::util::parallel_for_with_state(
+        files.size(),
+        threads,
+        [&]() {
+            Worker w;
+            if (deskewed_input) {
+                w.recognizer.emplace(camdrop::vision::PatternDictionary::LoadFromDirectory(pattern_dir));
+            } else {
+                camdrop::vision::FramePipelineConfig cfg;
+                cfg.model_path = model_path;
+                cfg.pattern_dir = pattern_dir;
+                cfg.patch_track_enabled = false;
+                cfg.localizer_options.ort_threads = std::max(1, ort_threads);
+                w.pipeline.emplace(cfg);
+            }
+            return w;
+        },
+        [&](Worker& w, size_t i) {
+            out[i] = process_file(
+                files[i],
+                w.pipeline ? &(*w.pipeline) : nullptr,
+                w.recognizer ? &(*w.recognizer) : nullptr,
+                deskewed_input);
+            const size_t cur = ++done;
+            if (cur == files.size() || (cur % 25 == 0)) {
+                std::lock_guard<std::mutex> lock(log_mu);
+                std::cout << "\rprocessed " << cur << "/" << files.size() << std::flush;
+            }
+        });
     std::cout << '\n';
     return out;
 }
@@ -270,26 +314,12 @@ void update_localize_stats(const FrameData& frame, LocalizeStats& stats) {
 int main(int argc, char** argv) {
     try {
         const Options opts = parse_args(argc, argv);
-        camdrop::vision::PatternRecognizer recognizer(
-            camdrop::vision::PatternDictionary::LoadFromDirectory(opts.pattern_dir));
+        const size_t threads = camdrop::util::resolve_thread_count(opts.threads);
+        const int ort_threads = std::max(1, opts.ort_threads);
+        camdrop::vision::PatternDictionary dict =
+            camdrop::vision::PatternDictionary::LoadFromDirectory(opts.pattern_dir);
         std::cout << "patch_track: " << (opts.patch_track ? "on" : "off") << '\n';
-
-        std::optional<camdrop::vision::FramePipeline> source_pipeline;
-        std::optional<camdrop::vision::FramePipeline> capture_pipeline;
-        if (!opts.source_deskewed) {
-            camdrop::vision::FramePipelineConfig cfg;
-            cfg.model_path = opts.model_path;
-            cfg.pattern_dir = opts.pattern_dir;
-            cfg.patch_track_enabled = false;
-            source_pipeline.emplace(cfg);
-        }
-        if (!opts.capture_deskewed) {
-            camdrop::vision::FramePipelineConfig cfg;
-            cfg.model_path = opts.model_path;
-            cfg.pattern_dir = opts.pattern_dir;
-            cfg.patch_track_enabled = false;
-            capture_pipeline.emplace(cfg);
-        }
+        std::cout << "threads: " << threads << " ort_threads: " << ort_threads << '\n';
 
         const auto source_files = collect_images(opts.source_dir);
         const auto capture_files = collect_images(opts.capture_dir);
@@ -300,15 +330,19 @@ int main(int argc, char** argv) {
         std::cout << "loading source frames...\n";
         auto source_frames = load_frames(
             source_files,
-            source_pipeline ? &(*source_pipeline) : nullptr,
-            &recognizer,
-            opts.source_deskewed);
+            opts.model_path,
+            opts.pattern_dir,
+            opts.source_deskewed,
+            threads,
+            ort_threads);
         std::cout << "loading capture frames...\n";
         auto capture_frames = load_frames(
             capture_files,
-            capture_pipeline ? &(*capture_pipeline) : nullptr,
-            &recognizer,
-            opts.capture_deskewed);
+            opts.model_path,
+            opts.pattern_dir,
+            opts.capture_deskewed,
+            threads,
+            ort_threads);
 
         std::vector<FrameData> valid_source;
         for (const auto& item : source_frames) {
@@ -325,7 +359,7 @@ int main(int argc, char** argv) {
         LocalizeStats capture_localize;
         size_t valid_capture = 0;
 
-        const int pattern_bits = recognizer.dict().pattern_bits();
+        const int pattern_bits = dict.pattern_bits();
         for (const auto& cap : capture_frames) {
             update_localize_stats(cap, capture_localize);
             if (cap.payload_symbols.empty()) continue;

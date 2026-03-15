@@ -1,11 +1,16 @@
 #include <cstdlib>
+#include <atomic>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#include <process.h>
+#endif
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -13,6 +18,7 @@
 #include "codec/Encoder.hpp"
 #include "util/config.hpp"
 #include "util/errors.hpp"
+#include "util/parallel.hpp"
 #include "vision/frame_renderer.hpp"
 #include "vision/pattern_dict.hpp"
 
@@ -25,15 +31,19 @@ struct Options {
     std::string out_dir = "out_frames";
     std::string pattern_dir = "web/pattern_sets/best_v2";
     std::string video_out;
-    std::string ffmpeg_bin = "ffmpeg";
+    std::string ffmpeg_bin;
     double acc = 0.95;
     int fps = 30;
     int repeat = 1;
+    int ffmpeg_crf = 0;
+    std::string ffmpeg_preset = "slow";
+    std::string ffmpeg_pix_fmt = "yuv444p";
     int screen_width = 1920;
     int screen_height = 1080;
     int code_size = 0;
     double code_fit = 0.96;
     bool wrap_screen = true;
+    int threads = 0;
 };
 
 std::string quote_arg(const std::string& value) {
@@ -49,10 +59,11 @@ std::string quote_arg(const std::string& value) {
 void print_usage() {
     std::cout
         << "Usage: file_video_encoder --input <file> [--out-dir <dir>] [--patterns <dir>]\n"
-        << "                          [--acc <0..1>] [--fps <n>] [--repeat <n>]\n"
+        << "                          [--acc <0..1>] [--fps <n>] [--repeat <n>] [--threads <n>]\n"
         << "                          [--screen-width <n>] [--screen-height <n>]\n"
         << "                          [--code-size <n>] [--code-fit <0..1>] [--raw-frame-output]\n"
-        << "                          [--video-out <file>] [--ffmpeg-bin <path>]\n";
+        << "                          [--video-out <file>] [--ffmpeg-bin <path>]\n"
+        << "                          [--ffmpeg-crf <n>] [--ffmpeg-preset <name>] [--ffmpeg-pix-fmt <fmt>]\n";
 }
 
 Options parse_args(int argc, char** argv) {
@@ -69,6 +80,14 @@ Options parse_args(int argc, char** argv) {
             opts.video_out = argv[++i];
         } else if (arg == "--ffmpeg-bin" && i + 1 < argc) {
             opts.ffmpeg_bin = argv[++i];
+        } else if (arg == "--ffmpeg-crf" && i + 1 < argc) {
+            opts.ffmpeg_crf = std::stoi(argv[++i]);
+        } else if (arg == "--ffmpeg-preset" && i + 1 < argc) {
+            opts.ffmpeg_preset = argv[++i];
+        } else if (arg == "--ffmpeg-pix-fmt" && i + 1 < argc) {
+            opts.ffmpeg_pix_fmt = argv[++i];
+        } else if (arg == "--threads" && i + 1 < argc) {
+            opts.threads = std::stoi(argv[++i]);
         } else if (arg == "--acc" && i + 1 < argc) {
             opts.acc = std::stod(argv[++i]);
         } else if (arg == "--fps" && i + 1 < argc) {
@@ -135,23 +154,88 @@ cv::Mat compose_screen_frame(const cv::Mat& code_image, const Options& opts) {
     return screen;
 }
 
+fs::path find_embedded_ffmpeg(const fs::path& argv0) {
+    fs::path dir = fs::absolute(argv0).parent_path();
+    {
+#ifdef _WIN32
+        const fs::path local = dir / "ffmpeg.exe";
+#else
+        const fs::path local = dir / "ffmpeg";
+#endif
+        if (fs::exists(local)) return local;
+    }
+    for (int i = 0; i < 6; ++i) {
+#ifdef _WIN32
+        const fs::path bin1 = dir / "third_party" / "ffmpeg" / "bin" / "ffmpeg.exe";
+        if (fs::exists(bin1)) return bin1;
+        const fs::path bin2 = dir / "third_party" / "ffmpeg" / "ffmpeg.exe";
+        if (fs::exists(bin2)) return bin2;
+#else
+        const fs::path bin1 = dir / "third_party" / "ffmpeg" / "bin" / "ffmpeg";
+        if (fs::exists(bin1)) return bin1;
+        const fs::path bin2 = dir / "third_party" / "ffmpeg" / "ffmpeg";
+        if (fs::exists(bin2)) return bin2;
+#endif
+        if (!dir.has_parent_path()) break;
+        dir = dir.parent_path();
+    }
+    return "ffmpeg";
+}
+
 int build_video_with_ffmpeg(const Options& opts, const fs::path& out_dir) {
     const std::string input_glob = (out_dir / "frame_%06d.png").string();
     std::ostringstream cmd;
     cmd << quote_arg(opts.ffmpeg_bin)
         << " -y -framerate " << opts.fps
         << " -i " << quote_arg(input_glob)
-        << " -c:v libx264 -pix_fmt yuv420p "
-        << quote_arg(opts.video_out);
+        << " -c:v libx264"
+        << " -preset " << quote_arg(opts.ffmpeg_preset)
+        << " -crf " << opts.ffmpeg_crf
+        << " -pix_fmt " << quote_arg(opts.ffmpeg_pix_fmt)
+        << " -tune stillimage"
+        << " " << quote_arg(opts.video_out);
     std::cout << "ffmpeg: " << cmd.str() << '\n';
+#ifdef _WIN32
+    std::vector<std::string> args = {
+        opts.ffmpeg_bin,
+        "-y",
+        "-framerate",
+        std::to_string(opts.fps),
+        "-i",
+        input_glob,
+        "-c:v",
+        "libx264",
+        "-preset",
+        opts.ffmpeg_preset,
+        "-crf",
+        std::to_string(opts.ffmpeg_crf),
+        "-pix_fmt",
+        opts.ffmpeg_pix_fmt,
+        "-tune",
+        "stillimage",
+        opts.video_out
+    };
+    std::vector<const char*> argv;
+    argv.reserve(args.size() + 1);
+    for (const auto& arg : args) {
+        argv.push_back(arg.c_str());
+    }
+    argv.push_back(nullptr);
+    const int rc = _spawnv(_P_WAIT, args[0].c_str(), argv.data());
+    return rc;
+#else
     return std::system(cmd.str().c_str());
+#endif
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
     try {
-        const Options opts = parse_args(argc, argv);
+        Options opts = parse_args(argc, argv);
+        if (opts.ffmpeg_bin.empty()) {
+            opts.ffmpeg_bin = find_embedded_ffmpeg(argv[0]).string();
+        }
         Config::auto_config(opts.acc);
 
         const fs::path out_dir = fs::absolute(opts.out_dir);
@@ -188,33 +272,78 @@ int main(int argc, char** argv) {
             std::cout << "screen_frame: raw-code-frame" << '\n';
         }
 
-        uint32_t frame_index = 0;
+        std::vector<std::vector<uint8_t>> logical_payloads;
+        logical_payloads.reserve(logical_frames);
         for (uint32_t logical = 0; logical < logical_frames; ++logical) {
             const std::vector<uint8_t> frame_bytes = encoder.get_packet();
             if (frame_bytes.size() != Config::PACKET_CAPACITY) {
-                throw EncoderRuntimeError("Encoder returned unexpected frame size: " + 
-                                         std::to_string(frame_bytes.size()) + " != " + 
+                throw EncoderRuntimeError("Encoder returned unexpected frame size: " +
+                                         std::to_string(frame_bytes.size()) + " != " +
                                          std::to_string(Config::PACKET_CAPACITY));
             }
-            
-            cv::Mat image;
-            try {
-                image = compose_screen_frame(renderer.Render(frame_bytes), opts);
-            } catch (const ImageError& e) {
-                throw ImageWriteError(std::string("Failed to render frame: ") + e.what());
-            }
-            
+            logical_payloads.push_back(frame_bytes);
+        }
+
+        struct FrameJob {
+            uint32_t logical_index = 0;
+            uint32_t frame_index = 0;
+        };
+        std::vector<FrameJob> jobs;
+        jobs.reserve(static_cast<size_t>(logical_frames) * static_cast<size_t>(opts.repeat));
+        uint32_t frame_index = 0;
+        for (uint32_t logical = 0; logical < logical_frames; ++logical) {
             for (int rep = 0; rep < opts.repeat; ++rep) {
+                jobs.push_back({logical, frame_index++});
+            }
+        }
+
+        const size_t threads = camdrop::util::resolve_thread_count(opts.threads);
+        std::mutex err_mu;
+        std::string first_error;
+        std::atomic<bool> failed{false};
+
+        auto render_job = [&](camdrop::vision::PatternFrameRenderer& local_renderer, size_t i) {
+            if (failed.load(std::memory_order_relaxed)) return;
+            const auto& job = jobs[i];
+            try {
+                const cv::Mat image = compose_screen_frame(
+                    local_renderer.Render(logical_payloads[job.logical_index]), opts);
                 std::ostringstream name;
-                name << "frame_" << std::setfill('0') << std::setw(6) << frame_index++ << ".png";
+                name << "frame_" << std::setfill('0') << std::setw(6) << job.frame_index << ".png";
                 const fs::path out_path = out_dir / name.str();
                 if (!cv::imwrite(out_path.string(), image)) {
                     throw ImageWriteError("Failed to write image: " + out_path.string());
                 }
+            } catch (const std::exception& ex) {
+                {
+                    std::lock_guard<std::mutex> lock(err_mu);
+                    if (first_error.empty()) first_error = ex.what();
+                }
+                failed.store(true, std::memory_order_relaxed);
             }
-            std::cout << "\rgenerated logical frame " << (logical + 1) << "/" << logical_frames << std::flush;
+        };
+
+        if (threads <= 1) {
+            for (size_t i = 0; i < jobs.size(); ++i) {
+                render_job(renderer, i);
+                if ((i + 1) % static_cast<size_t>(opts.repeat) == 0) {
+                    const size_t logical_done = (i + 1) / static_cast<size_t>(opts.repeat);
+                    std::cout << "\rgenerated logical frame " << logical_done << "/" << logical_frames << std::flush;
+                }
+            }
+            std::cout << '\n';
+        } else {
+            std::cout << "rendering " << jobs.size() << " frames with " << threads << " threads...\n";
+            camdrop::util::parallel_for_with_state(
+                jobs.size(),
+                threads,
+                [&]() { return camdrop::vision::PatternFrameRenderer(dict); },
+                render_job);
         }
-        std::cout << '\n';
+
+        if (failed.load()) {
+            throw ImageWriteError(first_error.empty() ? "render failed" : first_error);
+        }
 
         if (!opts.video_out.empty()) {
             const int rc = build_video_with_ffmpeg(opts, out_dir);

@@ -47,6 +47,11 @@ jobs:
         with:
           submodules: recursive
 
+      # ── FFmpeg ─────────────────────────────────────────────────
+      - name: Download FFmpeg (Windows)
+        shell: pwsh
+        run: powershell.exe -ExecutionPolicy Bypass -File .\tools\fetch_ffmpeg.ps1
+
       # ── OpenCV ──────────────────────────────────────────────────
       - name: Cache OpenCV
         id: cache-opencv
@@ -126,6 +131,12 @@ jobs:
               Write-Host "Bundled OpenCV (fallback): $($ocvDll.Name)"
           }
 
+          # FFmpeg: copy into same directory as binaries
+          Get-ChildItem "third_party\ffmpeg\bin\*" | ForEach-Object {
+              Copy-Item $_.FullName $dist
+              Write-Host "Bundled FFmpeg: $($_.Name)"
+          }
+
           Compress-Archive -Path "$dist\*" -DestinationPath camera-drop-tools-windows.zip
           Write-Host "Package contents:"
           Get-ChildItem $dist | Select-Object Name, Length
@@ -156,6 +167,18 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      # ── FFmpeg ─────────────────────────────────────────────────
+      - name: Download FFmpeg (Linux)
+        run: |
+          set -e
+          url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+          mkdir -p third_party/ffmpeg/bin
+          curl -L "$url" -o ffmpeg.tar.xz
+          tar -xf ffmpeg.tar.xz
+          dir=$(find . -maxdepth 1 -type d -name "ffmpeg-*static" | head -n 1)
+          cp "$dir/ffmpeg" third_party/ffmpeg/bin/ffmpeg
+          chmod +x third_party/ffmpeg/bin/ffmpeg
 
       # ── OpenCV ──────────────────────────────────────────────────
       - name: Install OpenCV
@@ -206,6 +229,9 @@ jobs:
             cp "$f" dist/
             echo "Bundled: $(basename $f)"
           done
+          # FFmpeg: copy into same directory as binaries
+          cp third_party/ffmpeg/bin/ffmpeg dist/
+          chmod +x dist/ffmpeg
 
           echo "Package contents:"
           ls -lh dist/

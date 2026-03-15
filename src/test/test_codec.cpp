@@ -1,7 +1,9 @@
 #include "codec/Encoder.hpp"
 #include "codec/Decoder.hpp"
 #include "util/config.hpp"
+#include "util/parallel.hpp"
 
+#include <atomic>
 #include <cstdio>
 #include <vector>
 #include <random>
@@ -9,6 +11,35 @@
 #include <string>
 #include <cassert>
 #include <algorithm>
+
+namespace {
+
+struct Options {
+    int threads = 0;
+    bool full = false;
+};
+
+void print_usage() {
+    puts("Usage: debug [--threads <n>] [--full]");
+}
+
+Options parse_args(int argc, char** argv) {
+    Options opts;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--threads" && i + 1 < argc) {
+            opts.threads = std::stoi(argv[++i]);
+        } else if (arg == "--full") {
+            opts.full = true;
+        } else {
+            print_usage();
+            std::exit(1);
+        }
+    }
+    return opts;
+}
+
+}  // namespace
 
 std::vector<uint8_t> generate_data(size_t size){
     std::vector<uint8_t> data(size);
@@ -67,10 +98,13 @@ private:
     double error_rate_;
 };
 
-int main(){
+int main(int argc, char** argv){
+    const Options opts = parse_args(argc, argv);
   //  Config::auto_config(0.90);
     for(double i = 0.90; i <= 0.991; i += 0.01) Config::auto_config(i);
-    return 0;
+    if (!opts.full) {
+        return 0;
+    }
     puts("getting encoder...");
 
     auto data = generate_data(1024 * 1024 * 10); // 10 MB
@@ -107,15 +141,48 @@ int main(){
         printf("packet size: %u\n", packet.size());
         channel.trans(packet);
     }*/
+    std::vector<Packet> frames;
+    frames.reserve(generate_frames);
     for(uint32_t i = 0; i < generate_frames; ++i){
         auto frame_data = encoder.get_packet();
         if(!i){
             printf("Frame capacity: %zu bytes\n", frame_data.size());
         }
-        channel.trans(frame_data);
+        frames.push_back(std::move(frame_data));
     }
 
-    auto recieved = channel.recieved();
+    const size_t threads = camdrop::util::resolve_thread_count(opts.threads);
+    std::vector<Packet> received(frames.size());
+    std::vector<uint8_t> received_ok(frames.size(), 0);
+    std::atomic<int> lossed{0};
+
+    camdrop::util::parallel_for(frames.size(), threads, [&](size_t i) {
+        static thread_local std::mt19937 rng(
+            static_cast<unsigned int>(
+                std::chrono::high_resolution_clock::now().time_since_epoch().count() ^
+                (reinterpret_cast<std::uintptr_t>(&rng) >> 4)));
+        std::uniform_real_distribution<double> prob(0.0, 1.0);
+        Packet raw = frames[i];
+        if (prob(rng) < 0.02) {
+            lossed.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        for (size_t k = 0; k < raw.size(); ++k) {
+            if (prob(rng) < 0.10) {
+                raw[k] = ~raw[k];
+            }
+        }
+        received[i] = std::move(raw);
+        received_ok[i] = 1;
+    });
+
+    std::vector<Packet> recieved;
+    recieved.reserve(frames.size());
+    for (size_t i = 0; i < received_ok.size(); ++i) {
+        if (received_ok[i]) {
+            recieved.push_back(std::move(received[i]));
+        }
+    }
 
     Decoder decoder;
     int cnt = 0;
@@ -145,5 +212,5 @@ int main(){
 
     if(!decoder.is_complete()) puts("Decode failed.");
     else puts("Decode success!");
-    printf("sent: %d, loss: %d, processed: %d\n", channel.total_frame(), channel.lossed_frame(), cnt); 
+    printf("sent: %zu, loss: %d, processed: %d\n", frames.size(), lossed.load(), cnt);
 }
