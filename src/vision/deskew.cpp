@@ -8,6 +8,13 @@
 namespace camdrop::vision {
 namespace {
 
+/**
+ * @brief 将一个点相对于中心点按比例缩放
+ * @param p 要缩放的点
+ * @param center 缩放的中心点
+ * @param ratio 缩放比例（>1表示放大，<1表示缩小）
+ * @return 缩放后的点
+ */
 cv::Point2f scale_point(const cv::Point2f& p, const cv::Point2f& center, float ratio) {
     return {
         center.x + (p.x - center.x) * ratio,
@@ -15,6 +22,13 @@ cv::Point2f scale_point(const cv::Point2f& p, const cv::Point2f& center, float r
     };
 }
 
+/**
+ * @brief 计算从源点数组到目标点数组的单应变换矩阵参数
+ * @param src 源点数组（通常是矩形的四个角）
+ * @param dst 目标点数组（四边形的四个角）
+ * @param out 输出数组，存储单应矩阵的8个参数（h0到h7）
+ * @return 如果计算成功返回true，否则返回false（矩阵奇异）
+ */
 bool compute_homography(const std::array<cv::Point2f, 4>& src,
                         const std::array<cv::Point2f, 4>& dst,
                         std::array<double, 8>& out) {
@@ -82,6 +96,13 @@ bool compute_homography(const std::array<cv::Point2f, 4>& src,
     return true;
 }
 
+/**
+ * @brief 使用最近邻插值从源图像采样像素值
+ * @param src 源图像
+ * @param x 采样x坐标（浮点数）
+ * @param y 采样y坐标（浮点数）
+ * @return 采样的BGR像素值
+ */
 inline cv::Vec3b sample_nearest_bgr(const cv::Mat& src, double x, double y) {
     int sx = static_cast<int>(std::lround(x));
     int sy = static_cast<int>(std::lround(y));
@@ -92,6 +113,17 @@ inline cv::Vec3b sample_nearest_bgr(const cv::Mat& src, double x, double y) {
 
 }  // namespace
 
+/**
+ * @brief 将输入图像中的四边形区域deskew为矩形输出图像
+ * @param frame 输入图像帧
+ * @param corners 输入四边形的四个角点
+ * @param out_width 输出图像宽度
+ * @param out_height 输出图像高度
+ * @param expand 扩展比例，用于放大四边形边界，保证图像质量（防止边缘像素丢失，提供缓冲区以改善视觉效果）
+ * @param canonical_inset 标准内边距（像素）
+ * @param interpolation 插值方法（当前未使用）
+ * @return 校正后的BGR图像，如果失败则为空
+ */
 cv::Mat Deskewer::Deskew(const cv::Mat& frame,
                          const CornerQuad& corners,
                          int out_width,

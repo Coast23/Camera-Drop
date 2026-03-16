@@ -182,7 +182,6 @@ static ContourInfo make_contour_info(const std::vector<cv::Point>& pts) {
     return {r, r.center, (w + h) * 0.5f, smin, smax, smin / std::max(1e-6f, smax)};
 }
 
-// Find the best directly nested child contour (matching ~0.75x size ratio, ~same center)
 static int find_nested_child(
     int parent,
     const std::vector<ContourInfo>& infos,
@@ -303,6 +302,10 @@ struct AnchorRoiScore {
     float outer_white, ring_black, inner_white, center_black, total;
 };
 
+/** @brief 评分锚点 ROI
+    @param roi 64x64 ROI 图像
+    @return 锚点 ROI 评分
+*/
 static AnchorRoiScore score_anchor_roi(const cv::Mat& roi) {
     constexpr float kCenter = (64 - 1) * 0.5f;
     float sums[4] = {};
@@ -327,6 +330,11 @@ static AnchorRoiScore score_anchor_roi(const cv::Mat& roi) {
 
 // Refine anchor center within a YOLO bbox using contour-based ring detection.
 // Returns the detected ring center in `frame` coordinates, or bbox center as fallback.
+/** @brief 使用轮廓检测精炼锚点中心
+    @param frame 输入帧
+    @param bbox YOLO 边界框
+    @return 精炼后的锚点中心或回退到边界框中心
+*/
 static cv::Point2f refine_anchor_center_contour(const cv::Mat& frame, const cv::Rect2f& bbox) {
     const cv::Point2f fallback(bbox.x + bbox.width * 0.5f, bbox.y + bbox.height * 0.5f);
 
@@ -399,6 +407,11 @@ static cv::Point2f refine_anchor_center_contour(const cv::Mat& frame, const cv::
 
 // Refine BR anchor center: same contour chain detection but NO W-B-W-B score filter
 // (BR has colored quadrant rings, not black/white, so score_anchor_roi is inappropriate)
+/** @brief 精炼 BR 锚点中心
+    @param frame 输入帧
+    @param bbox YOLO 边界框
+    @return 精炼后的 BR 锚点中心或回退到边界框中心
+*/
 static cv::Point2f refine_br_center_contour(const cv::Mat& frame, const cv::Rect2f& bbox) {
     const cv::Point2f fallback(bbox.x + bbox.width * 0.5f, bbox.y + bbox.height * 0.5f);
 
@@ -495,6 +508,10 @@ CornerQuad build_corners_from_centers(const std::array<cv::Point2f, 4>& anchors)
 // Mirrors web's orderNormalTriple: TL = vertex opposite the longest edge (the TR-BL diagonal).
 // TR/BL disambiguated by checking which remaining vertex lies on the "right" side of TL.
 // Returns indices {tl, tr, bl} into the input centers array.
+/** @brief 为三个正常锚点分配 TL/TR/BL 角色
+    @param c 三个锚点中心
+    @return 索引数组 {tl, tr, bl}
+*/
 static std::array<int, 3> order_normal_triple(const std::array<cv::Point2f, 3>& c) {
     // edges[i] is the edge vector opposite to vertex i
     const std::array<cv::Point2f, 3> edges = {{

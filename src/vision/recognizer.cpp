@@ -262,24 +262,53 @@ static const std::array<OffsetCase, 6> OFFSET_CASES = {{
     {1.5, 1.5, 1.28},
 }};
 
+/**
+ * @brief 根据字典大小计算模式位数
+ * @param n 字典大小
+ * @return 所需的位数
+ */
 static inline int pattern_bits_for_dict(int n) {
     int bits = 0;
     while ((1 << bits) < n) ++bits;
     return bits;
 }
 
+/**
+ * @brief 将整数值限制在指定范围内
+ * @param v 输入值
+ * @param lo 下限
+ * @param hi 上限
+ * @return 限制后的值
+ */
 static inline int clamp_int(int v, int lo, int hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+/**
+ * @brief 将堆节点索引和优先级打包为32位值
+ * @param idx 节点索引
+ * @param prio 优先级
+ * @return 打包后的32位值
+ */
 static inline uint32_t pack_heap_node(int idx, uint16_t prio) {
     return (static_cast<uint32_t>(prio) << HEAP_IDX_BITS) | static_cast<uint32_t>(idx & HEAP_IDX_MASK);
 }
 
+/**
+ * @brief 从打包的堆节点值中解包索引
+ * @param node 打包的堆节点值
+ * @return 节点索引
+ */
 static inline int unpack_heap_idx(uint32_t node) {
     return static_cast<int>(node & HEAP_IDX_MASK);
 }
 
+/**
+ * @brief 检查指定网格位置是否为锚点保留单元
+ * @param r 行索引
+ * @param c 列索引
+ * @return 如果是保留单元则返回true，否则false
+ */
 static inline bool is_anchor_reserved(int r, int c) {
     if (r < Config::ANCHOR_RESERVED_CELLS && c < Config::ANCHOR_RESERVED_CELLS) return true;
     if (r < Config::ANCHOR_RESERVED_CELLS && c >= GRID_COLS - Config::ANCHOR_RESERVED_CELLS) return true;
@@ -288,23 +317,53 @@ static inline bool is_anchor_reserved(int r, int c) {
     return false;
 }
 
+/**
+ * @brief 检查指定网格位置是否为校准单元
+ * @param r 行索引
+ * @param c 列索引
+ * @return 如果是校准单元则返回true，否则false
+ */
 static inline bool is_calibration_cell(int r, int c) {
     return r == Config::CALIB_ROW && c >= Config::CALIB_COL_BEGIN && c < Config::CALIB_COL_END;
 }
 
+/**
+ * @brief 检查指定网格位置是否为头部单元
+ * @param r 行索引
+ * @param c 列索引
+ * @return 如果是头部单元则返回true，否则false
+ */
 static inline bool is_header_cell(int r, int c) {
     return r == Config::HEADER_ROW && c >= Config::HEADER_COL_BEGIN && c < Config::HEADER_COL_END;
 }
 
+/**
+ * @brief 检查指定网格位置是否为有效载荷单元
+ * @param r 行索引
+ * @param c 列索引
+ * @return 如果是有效载荷单元则返回true，否则false
+ */
 static inline bool is_payload_cell(int r, int c) {
     return !is_anchor_reserved(r, c) && !is_calibration_cell(r, c) && !is_header_cell(r, c);
 }
 
+/**
+ * @brief 检查掩码中的指定位是否开启
+ * @param mask_lo 低32位掩码
+ * @param mask_hi 高32位掩码
+ * @param bit 位索引 (0-63)
+ * @return 如果位开启则返回true，否则false
+ */
 static inline bool mask_is_on(uint32_t mask_lo, uint32_t mask_hi, int bit) {
     if (bit < 32) return ((mask_lo >> bit) & 1U) != 0;
     return ((mask_hi >> (bit - 32)) & 1U) != 0;
 }
 
+/**
+ * @brief 将64位掩码分割为两个32位部分
+ * @param mask 64位掩码
+ * @return 包含低32位和高32位的pair
+ */
 static inline std::pair<uint32_t, uint32_t> split_mask64(uint64_t mask) {
     return {
         static_cast<uint32_t>(mask & 0xFFFFFFFFULL),
@@ -312,6 +371,12 @@ static inline std::pair<uint32_t, uint32_t> split_mask64(uint64_t mask) {
     };
 }
 
+/**
+ * @brief 将64位掩码压缩为16位掩码
+ * @param mask_lo 低32位掩码
+ * @param mask_hi 高32位掩码
+ * @return 压缩后的16位掩码
+ */
 static uint16_t compress_mask64_to_16(uint32_t mask_lo, uint32_t mask_hi) {
     uint16_t out = 0;
     for (int r = 0; r < 4; ++r) {
@@ -328,6 +393,11 @@ static uint16_t compress_mask64_to_16(uint32_t mask_lo, uint32_t mask_hi) {
     return out;
 }
 
+/**
+ * @brief 从64位掩码向量构建模式字典
+ * @param masks64 64位掩码向量
+ * @return 构建的模式字典
+ */
 static PatternDict build_pattern_dict(const std::vector<uint64_t>& masks64) {
     PatternDict dict;
     dict.masks64 = masks64;
@@ -343,15 +413,34 @@ static PatternDict build_pattern_dict(const std::vector<uint64_t>& masks64) {
     return dict;
 }
 
+/**
+ * @brief 将64位掩码压缩为16位掩码
+ * @param mask 64位掩码
+ * @return 压缩后的16位掩码
+ */
 static inline uint16_t compress_mask64_to_16(uint64_t mask) {
     const auto parts = split_mask64(mask);
     return compress_mask64_to_16(parts.first, parts.second);
 }
 
+/**
+ * @brief 检查64位掩码中的指定位置是否开启
+ * @param mask 64位掩码
+ * @param x x坐标 (0-7)
+ * @param y y坐标 (0-7)
+ * @return 如果位置开启则返回true，否则false
+ */
 static inline bool mask64_is_on(uint64_t mask, int x, int y) {
     return ((mask >> (y * 8 + x)) & 1ULL) != 0ULL;
 }
 
+/**
+ * @brief 平移64位掩码
+ * @param mask 原始64位掩码
+ * @param dx x方向偏移
+ * @param dy y方向偏移
+ * @return 平移后的64位掩码
+ */
 static uint64_t translate_mask64(uint64_t mask, int dx, int dy) {
     uint64_t out = 0;
     for (int y = 0; y < 8; ++y) {
@@ -366,6 +455,14 @@ static uint64_t translate_mask64(uint64_t mask, int dx, int dy) {
     return out;
 }
 
+/**
+ * @brief 采样矩形区域的平均RGB值
+ * @param img 输入图像
+ * @param x0 矩形左上角x坐标
+ * @param y0 矩形左上角y坐标
+ * @param size 矩形边长
+ * @return 平均RGB值
+ */
 static Rgb sample_rect_mean_rgb(const cv::Mat& img, int x0, int y0, int size) {
     const int sx = clamp_int(x0, 0, IMG_W - size);
     const int sy = clamp_int(y0, 0, IMG_H - size);
@@ -385,6 +482,17 @@ static Rgb sample_rect_mean_rgb(const cv::Mat& img, int x0, int y0, int size) {
     return {sr / n, sg / n, sb / n};
 }
 
+/**
+ * @brief 采样矩形区域的选择性RGB值（根据评分函数选择像素）
+ * @tparam ScoreFn 评分函数类型
+ * @param img 输入图像
+ * @param x0 矩形左上角x坐标
+ * @param y0 矩形左上角y坐标
+ * @param size 矩形边长
+ * @param score_pixel 像素评分函数
+ * @param keep_ratio 保留比例
+ * @return 选择性平均RGB值
+ */
 template <typename ScoreFn>
 static Rgb sample_rect_selective_rgb(const cv::Mat& img,
                                      int x0,
@@ -421,10 +529,21 @@ static Rgb sample_rect_selective_rgb(const cv::Mat& img,
     return {sr / keep, sg / keep, sb / keep};
 }
 
+/**
+ * @brief 计算两个RGB值的平均值
+ * @param a 第一个RGB值
+ * @param b 第二个RGB值
+ * @return 平均RGB值
+ */
 static Rgb average_rgb(const Rgb& a, const Rgb& b) {
     return {(a.r + b.r) * 0.5, (a.g + b.g) * 0.5, (a.b + b.b) * 0.5};
 }
 
+/**
+ * @brief 计算RGB值向量的平均值
+ * @param samples RGB值向量
+ * @return 平均RGB值
+ */
 static Rgb average_rgbs(const std::vector<Rgb>& samples) {
     if (samples.empty()) return {};
     double sr = 0.0;
@@ -439,6 +558,12 @@ static Rgb average_rgbs(const std::vector<Rgb>& samples) {
     return {sr * inv, sg * inv, sb * inv};
 }
 
+/**
+ * @brief 计算两个RGB值的差值（非负）
+ * @param a 被减数RGB值
+ * @param b 减数RGB值
+ * @return 差值RGB值（各分量不小于0）
+ */
 static Rgb subtract_rgb(const Rgb& a, const Rgb& b) {
     return {
         std::max(0.0, a.r - b.r),
@@ -447,6 +572,14 @@ static Rgb subtract_rgb(const Rgb& a, const Rgb& b) {
     };
 }
 
+/**
+ * @brief 计算像素颜色与指定颜色索引的匹配评分
+ * @param r 红色分量
+ * @param g 绿色分量
+ * @param b 蓝色分量
+ * @param color_idx 颜色索引 (0-3)
+ * @return 匹配评分
+ */
 static double color_rect_score(double r, double g, double b, int color_idx) {
     switch (color_idx) {
         case 0: return (r + g) - (b * 2.0);
@@ -457,6 +590,15 @@ static double color_rect_score(double r, double g, double b, int color_idx) {
     }
 }
 
+/**
+ * @brief 采样矩形区域中指定颜色的强颜色RGB值
+ * @param img 输入图像
+ * @param x0 矩形左上角x坐标
+ * @param y0 矩形左上角y坐标
+ * @param size 矩形边长
+ * @param color_idx 颜色索引
+ * @return 强颜色平均RGB值
+ */
 static Rgb sample_rect_strong_color_rgb(const cv::Mat& img, int x0, int y0, int size, int color_idx) {
     return sample_rect_selective_rgb(
         img, x0, y0, size,
