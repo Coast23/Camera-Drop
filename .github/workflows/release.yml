@@ -50,7 +50,7 @@ jobs:
       # ── FFmpeg ─────────────────────────────────────────────────
       - name: Download FFmpeg (Windows)
         shell: pwsh
-        run: powershell.exe -ExecutionPolicy Bypass -File .\tools\fetch_ffmpeg.ps1
+        run: .\tools\fetch_ffmpeg.ps1
 
       # ── OpenCV ──────────────────────────────────────────────────
       - name: Cache OpenCV
