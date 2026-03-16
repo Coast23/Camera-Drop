@@ -50,7 +50,9 @@ jobs:
       # ── FFmpeg ─────────────────────────────────────────────────
       - name: Download FFmpeg (Windows)
         shell: pwsh
-        run: .\tools\fetch_ffmpeg.ps1
+        run: |
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE "tools\fetch_ffmpeg.ps1"
+          & $scriptPath
 
       # ── OpenCV ──────────────────────────────────────────────────
       - name: Cache OpenCV
