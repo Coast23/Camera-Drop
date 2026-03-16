@@ -78,6 +78,12 @@ int PatternDictionary::pattern_bits() const {
     return pattern_bits_for_count(size());
 }
 
+/**
+ * @brief 从目录加载模式字典
+ * @param dir 包含模式图像的目录路径
+ * @return 加载的模式字典
+ * @throws std::runtime_error 如果无法加载图像文件
+ */
 PatternDictionary PatternDictionary::LoadFromDirectory(const std::string& dir) {
     if (dir.empty()) {
         throw PatternDictLoadError("Empty directory path");

@@ -61,6 +61,14 @@ void draw_br_anchor(cv::Mat& img, int x0, int y0) {
     cv::rectangle(img, cv::Rect(x0 + Config::ANCHOR_L4_INSET, y0 + Config::ANCHOR_L4_INSET, Config::ANCHOR_L4_SIZE, Config::ANCHOR_L4_SIZE), cv::Scalar(0, 0, 0), cv::FILLED);
 }
 
+/**
+ * @brief 在图像上绘制符号
+ * @param img 要绘制的图像
+ * @param grid_r 网格行索引
+ * @param grid_c 网格列索引
+ * @param symbol 要绘制的符号值
+ * @param dict 字典
+ */
 void draw_symbol_tile(cv::Mat& img,
                       int grid_r,
                       int grid_c,
@@ -99,11 +107,20 @@ void validate_dict(const PatternDictionary& dict) {
 
 }  // namespace
 
+/**
+ * @brief PatternFrameRenderer构造函数
+ * @param dict 模式字典，用于渲染符号
+ */
 PatternFrameRenderer::PatternFrameRenderer(PatternDictionary dict)
     : dict_(std::move(dict)) {
     validate_dict(dict_);
 }
 
+/**
+ * @brief 渲染帧字节为图像
+ * @param frame_bytes 要渲染的帧字节数据
+ * @return 渲染后的BGR图像
+ */
 cv::Mat PatternFrameRenderer::Render(const std::vector<uint8_t>& frame_bytes) const {
     std::vector<uint8_t> symbols;
     try {
@@ -114,6 +131,11 @@ cv::Mat PatternFrameRenderer::Render(const std::vector<uint8_t>& frame_bytes) co
     return RenderInterleavedSymbols(symbols);
 }
 
+/**
+ * @brief 渲染交织符号为图像
+ * @param interleaved_symbols 要渲染的交织符号数据
+ * @return 渲染后的BGR图像，包含锚点、校准单元和数据符号
+ */
 cv::Mat PatternFrameRenderer::RenderInterleavedSymbols(const std::vector<uint8_t>& interleaved_symbols) const {
     if (interleaved_symbols.size() != Config::UINTS_COUNT) {
         throw ImageSizeError("Render symbol count " + std::to_string(interleaved_symbols.size()) + 

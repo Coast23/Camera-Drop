@@ -1,9 +1,11 @@
-[submodule "third_party/wirehair"]
-	path = third_party/wirehair
-	url = https://github.com/catid/wirehair.git
 [submodule "third_party/correct"]
-	path = third_party/correct
-	url = https://github.com/quiet/libcorrect.git
+    path = third_party/correct
+    url = git@github.com:quiet/libcorrect.git
+
+[submodule "third_party/wirehair"]
+    path = third_party/wirehair
+    url = git@github.com:catid/wirehair.git
+
 [submodule "third_party/zstd"]
-	path = third_party/zstd
-	url = https://github.com/facebook/zstd.git
+    path = third_party/zstd
+    url = git@github.com:facebook/zstd.git

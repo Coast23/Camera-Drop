@@ -128,6 +128,11 @@ bool FramePipeline::track_patches(const cv::Mat& frame, CornerQuad* out) {
     return out->valid();
 }
 
+/**
+ * @brief 处理输入图像帧，进行定位、deskew和识别
+ * @param frame 输入图像帧
+ * @return 处理结果，包含定位、deskew和识别信息
+ */
 PipelineResult FramePipeline::Process(const cv::Mat& frame) {
     PipelineResult result;
     if (frame.empty()) {

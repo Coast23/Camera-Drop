@@ -10,6 +10,11 @@
 namespace camdrop::vision {
 namespace {
 
+/**
+ * @brief 检查帧字节大小是否符合要求
+ * @param size 帧字节大小
+ * @throws std::runtime_error 如果大小不匹配
+ */
 void require_frame_bytes_size(size_t size) {
     if (size != Config::PACKET_CAPACITY) {
         throw ImageSizeError("Frame bytes size " + std::to_string(size) + 
@@ -17,6 +22,11 @@ void require_frame_bytes_size(size_t size) {
     }
 }
 
+/**
+ * @brief 检查交织符号数量是否符合要求
+ * @param size 交织符号数量
+ * @throws std::runtime_error 如果数量不匹配
+ */
 void require_interleaved_symbol_count(size_t size) {
     if (size != Config::UINTS_COUNT) {
         throw ImageSizeError("Interleaved symbol count " + std::to_string(size) + 
@@ -24,6 +34,11 @@ void require_interleaved_symbol_count(size_t size) {
     }
 }
 
+/**
+ * @brief 检查识别结果的布局是否符合要求
+ * @param result 识别结果
+ * @throws std::runtime_error 如果头部或有效载荷符号数量不匹配
+ */
 void require_recognized_layout(const RecognizeResult& result) {
     if (result.header_symbols.size() != Config::HEADER_SYMBOL_COUNT) {
         throw ImageSizeError("Header symbol count " + std::to_string(result.header_symbols.size()) + 
@@ -37,6 +52,11 @@ void require_recognized_layout(const RecognizeResult& result) {
 
 }  // namespace
 
+/**
+ * @brief 将帧字节转换为交织符号
+ * @param frame_bytes 输入的帧字节数据
+ * @return 交织后的符号向量
+ */
 std::vector<uint8_t> FrameBytesToInterleavedSymbols(const std::vector<uint8_t>& frame_bytes) {
     require_frame_bytes_size(frame_bytes.size());
     
@@ -58,6 +78,11 @@ std::vector<uint8_t> FrameBytesToInterleavedSymbols(const std::vector<uint8_t>& 
     return symbols;
 }
 
+/**
+ * @brief 将交织符号转换为帧字节
+ * @param interleaved_symbols 输入的交织符号数据
+ * @return 解交织后的帧字节向量
+ */
 std::vector<uint8_t> InterleavedSymbolsToFrameBytes(const std::vector<uint8_t>& interleaved_symbols) {
     require_interleaved_symbol_count(interleaved_symbols.size());
     
@@ -79,6 +104,11 @@ std::vector<uint8_t> InterleavedSymbolsToFrameBytes(const std::vector<uint8_t>& 
     return frame_bytes;
 }
 
+/**
+ * @brief 将识别结果转换为交织符号
+ * @param result 识别结果
+ * @return 交织符号向量
+ */
 std::vector<uint8_t> RecognizeResultToInterleavedSymbols(const RecognizeResult& result) {
     require_recognized_layout(result);
     
@@ -91,6 +121,11 @@ std::vector<uint8_t> RecognizeResultToInterleavedSymbols(const RecognizeResult& 
     return symbols;
 }
 
+/**
+ * @brief 将识别结果转换为帧字节
+ * @param result 识别结果
+ * @return 帧字节向量
+ */
 std::vector<uint8_t> RecognizeResultToFrameBytes(const RecognizeResult& result) {
     return InterleavedSymbolsToFrameBytes(RecognizeResultToInterleavedSymbols(result));
 }
