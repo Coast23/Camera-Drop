@@ -23,8 +23,26 @@ jobs:
       # ── FFmpeg ─────────────────────────────────────────────────
       - name: Download FFmpeg (Windows)
         shell: pwsh
-        run: powershell.exe -ExecutionPolicy Bypass -File .\tools\fetch_ffmpeg.ps1
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          $outDir    = Join-Path $env:GITHUB_WORKSPACE "third_party\ffmpeg"
 
+          Write-Host "Downloading FFmpeg from $ffmpegUrl ..."
+          Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg-win64.zip -UseBasicParsing
+
+          Write-Host "Extracting ..."
+          Expand-Archive ffmpeg-win64.zip -DestinationPath _ffmpeg_tmp -Force
+
+          $innerDir = Get-ChildItem _ffmpeg_tmp -Directory | Select-Object -First 1
+
+          New-Item -ItemType Directory -Force -Path "$outDir\bin" | Out-Null
+          Copy-Item "$($innerDir.FullName)\bin\ffmpeg.exe"  "$outDir\bin\ffmpeg.exe"
+          Copy-Item "$($innerDir.FullName)\bin\ffprobe.exe" "$outDir\bin\ffprobe.exe"
+
+          Write-Host "FFmpeg installed to $outDir\bin"
+          Get-ChildItem "$outDir\bin"
+          
       # ── OpenCV ──────────────────────────────────────────────────
       - name: Cache OpenCV
         id: cache-opencv
