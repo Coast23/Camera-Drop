@@ -16,8 +16,8 @@ class PatternRecognizer {
 public:
     explicit PatternRecognizer(PatternDictionary dict, RecognizerOptions options = {});
 
-    const PatternDictionary& dict() const { return dict_; }
-    RecognizeResult Decode(const cv::Mat& deskewed) const;
+    [[nodiscard]] const PatternDictionary& dict() const { return dict_; }
+    [[nodiscard]] RecognizeResult Decode(const cv::Mat& deskewed) const;
 
 private:
     PatternDictionary dict_;

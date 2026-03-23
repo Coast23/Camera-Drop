@@ -16,7 +16,9 @@ namespace {
  */
 void require_frame_bytes_size(size_t size) {
     if (size != Config::PACKET_CAPACITY) {
-        throw std::runtime_error("frame byte count mismatch");
+        throw std::runtime_error("frame byte count mismatch: expected " + 
+                                 std::to_string(Config::PACKET_CAPACITY) + 
+                                 ", got " + std::to_string(size));
     }
 }
 
@@ -27,7 +29,9 @@ void require_frame_bytes_size(size_t size) {
  */
 void require_interleaved_symbol_count(size_t size) {
     if (size != Config::UINTS_COUNT) {
-        throw std::runtime_error("interleaved symbol count mismatch");
+        throw std::runtime_error("interleaved symbol count mismatch: expected " + 
+                                 std::to_string(Config::UINTS_COUNT) + 
+                                 ", got " + std::to_string(size));
     }
 }
 
@@ -38,10 +42,14 @@ void require_interleaved_symbol_count(size_t size) {
  */
 void require_recognized_layout(const RecognizeResult& result) {
     if (result.header_symbols.size() != Config::HEADER_SYMBOL_COUNT) {
-        throw std::runtime_error("recognized header symbol count mismatch");
+        throw std::runtime_error("recognized header symbol count mismatch: expected " + 
+                                 std::to_string(Config::HEADER_SYMBOL_COUNT) + 
+                                 ", got " + std::to_string(result.header_symbols.size()));
     }
     if (result.payload_symbols.size() != Config::PAYLOAD_SYMBOL_COUNT) {
-        throw std::runtime_error("recognized payload symbol count mismatch");
+        throw std::runtime_error("recognized payload symbol count mismatch: expected " + 
+                                 std::to_string(Config::PAYLOAD_SYMBOL_COUNT) + 
+                                 ", got " + std::to_string(result.payload_symbols.size()));
     }
 }
 

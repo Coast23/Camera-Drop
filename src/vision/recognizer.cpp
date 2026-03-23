@@ -1717,7 +1717,8 @@ cv::Mat normalize_input(const cv::Mat& input) {
     } else if (input.channels() == 1) {
         cv::cvtColor(input, bgr, cv::COLOR_GRAY2BGR);
     } else {
-        throw std::runtime_error("unsupported deskewed image format");
+        throw std::runtime_error("unsupported deskewed image format: channels = " + 
+                                 std::to_string(input.channels()));
     }
     if (bgr.cols == IMG_W && bgr.rows == IMG_H) {
         return bgr;
