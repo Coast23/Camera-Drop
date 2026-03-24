@@ -107,11 +107,23 @@ if(CAMDROP_BUILD_ORT_PIPELINE)
         HINTS ${ONNXRUNTIME_ROOT} ENV ONNXRUNTIME_ROOT
         PATH_SUFFIXES lib lib64
     )
+    get_filename_component(ONNXRUNTIME_LIBRARY_DIR "${ONNXRUNTIME_LIBRARY}" DIRECTORY)
+    unset(ONNXRUNTIME_DLL CACHE)
+
+    # Prefer a DLL adjacent to the selected import library to avoid version mismatch.
     find_file(ONNXRUNTIME_DLL
         NAMES onnxruntime.dll
-        HINTS ${ONNXRUNTIME_ROOT} ENV ONNXRUNTIME_ROOT
+        HINTS ${ONNXRUNTIME_ROOT} ENV ONNXRUNTIME_ROOT ${ONNXRUNTIME_LIBRARY_DIR}
         PATH_SUFFIXES bin lib
+        NO_DEFAULT_PATH
     )
+    if(NOT ONNXRUNTIME_DLL)
+        find_file(ONNXRUNTIME_DLL
+            NAMES onnxruntime.dll
+            HINTS ${ONNXRUNTIME_ROOT} ENV ONNXRUNTIME_ROOT ${ONNXRUNTIME_LIBRARY_DIR}
+            PATH_SUFFIXES bin lib
+        )
+    endif()
     include(FindPackageHandleStandardArgs)
     find_package_handle_standard_args(ONNXRuntime
         REQUIRED_VARS ONNXRUNTIME_INCLUDE_DIR ONNXRUNTIME_LIBRARY
