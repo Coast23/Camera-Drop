@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -161,6 +162,119 @@ class ProcessWorker(QObject):
             self.finished.emit(process.returncode)
         except Exception as exc:
             self.failed.emit(f"[Exception] {str(exc)}")
+
+
+class TextFileEditorDialog(QDialog):
+    def __init__(self, parent=None, initial_path=""):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Input Text File")
+        self.resize(820, 560)
+
+        self.path_edit = QLineEdit(initial_path)
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlaceholderText("Type or paste text content here...")
+
+        root = QVBoxLayout(self)
+
+        path_row = QHBoxLayout()
+        path_row.addWidget(QLabel("Text File:"))
+        path_row.addWidget(self.path_edit, stretch=1)
+
+        btn_browse = QPushButton("Browse...")
+        btn_browse.clicked.connect(self._browse_file)
+        path_row.addWidget(btn_browse)
+
+        btn_load = QPushButton("Load")
+        btn_load.clicked.connect(self.load_file)
+        path_row.addWidget(btn_load)
+
+        root.addLayout(path_row)
+        root.addWidget(self.text_edit, stretch=1)
+
+        action_row = QHBoxLayout()
+        action_row.addStretch(1)
+
+        btn_save = QPushButton("Save")
+        btn_save.clicked.connect(self.save_file)
+        action_row.addWidget(btn_save)
+
+        btn_apply = QPushButton("Save and Use This Path")
+        btn_apply.clicked.connect(self._save_and_accept)
+        action_row.addWidget(btn_apply)
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.reject)
+        action_row.addWidget(btn_close)
+
+        root.addLayout(action_row)
+
+        if initial_path and os.path.exists(initial_path):
+            self.load_file()
+
+    def _browse_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Text File")
+        if file_path:
+            self.path_edit.setText(file_path)
+            self.load_file()
+
+    def _read_text_with_fallback(self, file_path):
+        encodings = ["utf-8", "utf-8-sig", "gb18030", "gbk"]
+        last_error = None
+        for enc in encodings:
+            try:
+                with open(file_path, "r", encoding=enc) as f:
+                    return f.read(), enc
+            except UnicodeDecodeError as exc:
+                last_error = exc
+        raise last_error if last_error else UnicodeDecodeError("unknown", b"", 0, 1, "decode failed")
+
+    def load_file(self):
+        file_path = self.path_edit.text().strip()
+        if not file_path:
+            QMessageBox.warning(self, "Warning", "Please choose a text file path first.")
+            return
+        if not os.path.exists(file_path):
+            QMessageBox.warning(self, "Warning", "File does not exist.")
+            return
+
+        try:
+            content, used_encoding = self._read_text_with_fallback(file_path)
+            self.text_edit.setPlainText(content)
+            if used_encoding != "utf-8":
+                QMessageBox.information(
+                    self,
+                    "Encoding Notice",
+                    f"Loaded with {used_encoding}. It will be saved as UTF-8 for stable Chinese text support.",
+                )
+        except Exception as exc:
+            QMessageBox.critical(self, "Load Failed", f"Cannot read file:\n{exc}")
+
+    def save_file(self):
+        file_path = self.path_edit.text().strip()
+        if not file_path:
+            file_path, _ = QFileDialog.getSaveFileName(self, "Save Text File", filter="Text files (*.txt);;All files (*.*)")
+            if not file_path:
+                return False
+            self.path_edit.setText(file_path)
+
+        try:
+            parent_dir = os.path.dirname(file_path)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+            with open(file_path, "w", encoding="utf-8", newline="") as f:
+                f.write(self.text_edit.toPlainText())
+            QMessageBox.information(self, "Saved", "File saved as UTF-8.")
+            return True
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Failed", f"Cannot save file:\n{exc}")
+            return False
+
+    def _save_and_accept(self):
+        if self.save_file():
+            self.accept()
+
+    def selected_path(self):
+        return self.path_edit.text().strip()
 
 
 class CameraDropGUI(QMainWindow):
@@ -420,6 +534,9 @@ class CameraDropGUI(QMainWindow):
         btn_input = QPushButton("Browse...")
         btn_input.clicked.connect(self._browse_encoder_input)
         layout.addWidget(btn_input, 0, 2)
+        btn_edit_text = QPushButton("Edit Text...")
+        btn_edit_text.clicked.connect(self._open_text_editor)
+        layout.addWidget(btn_edit_text, 0, 3)
 
         layout.addWidget(QLabel("Output Video (*.mp4):"), 1, 0)
         layout.addWidget(self.enc_output, 1, 1)
@@ -437,6 +554,13 @@ class CameraDropGUI(QMainWindow):
         layout.addLayout(run_row, 2, 0, 1, 3)
 
         layout.setColumnStretch(1, 1)
+
+    def _open_text_editor(self):
+        dialog = TextFileEditorDialog(self, self.enc_input.text().strip())
+        if dialog.exec() == QDialog.Accepted:
+            selected = dialog.selected_path()
+            if selected:
+                self.enc_input.setText(selected)
 
     def _build_decoder_tab(self):
         layout = QGridLayout(self.tab_decoder)
