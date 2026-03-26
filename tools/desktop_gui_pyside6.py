@@ -4,10 +4,13 @@ import re
 import subprocess
 import sys
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QTextCursor
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -293,6 +296,12 @@ class CameraDropGUI(QMainWindow):
         self.enc_output = QLineEdit()
         self.dec_input = QLineEdit()
         self.dec_output = QLineEdit()
+        self.preview_toggle = QCheckBox("Show Video Preview")
+        self.preview_group = QGroupBox("Video Preview")
+        self.video_widget = QVideoWidget()
+        self.media_player = QMediaPlayer(self)
+        self.audio_output = QAudioOutput(self)
+        self.dec_input.editingFinished.connect(lambda: self._update_video_preview_source(auto_play=False))
 
         central = QWidget(self)
         self.setCentralWidget(central)
@@ -580,6 +589,21 @@ class CameraDropGUI(QMainWindow):
         btn_output.clicked.connect(self._browse_decoder_output)
         layout.addWidget(btn_output, 1, 2)
 
+        self.preview_toggle.toggled.connect(self._toggle_video_preview)
+        layout.addWidget(self.preview_toggle, 2, 0, 1, 3)
+
+        preview_layout = QVBoxLayout(self.preview_group)
+        preview_layout.setContentsMargins(10, 14, 10, 10)
+        self.video_widget.setMinimumHeight(220)
+        preview_layout.addWidget(self.video_widget)
+
+        self.media_player.setVideoOutput(self.video_widget)
+        self.media_player.setAudioOutput(self.audio_output)
+        self.audio_output.setVolume(0.0)
+
+        self.preview_group.setVisible(False)
+        layout.addWidget(self.preview_group, 3, 0, 1, 3)
+
         run_btn = QPushButton("Run Decoder")
         run_btn.clicked.connect(self.run_decoder)
 
@@ -587,9 +611,30 @@ class CameraDropGUI(QMainWindow):
         run_row.addStretch(1)
         run_row.addWidget(run_btn)
         run_row.addStretch(1)
-        layout.addLayout(run_row, 2, 0, 1, 3)
+        layout.addLayout(run_row, 4, 0, 1, 3)
 
         layout.setColumnStretch(1, 1)
+
+    def _toggle_video_preview(self, checked):
+        self.preview_group.setVisible(checked)
+        if checked:
+            self._update_video_preview_source(auto_play=True)
+        else:
+            self.media_player.stop()
+
+    def _update_video_preview_source(self, auto_play=False):
+        if not self.preview_toggle.isChecked():
+            return
+
+        video_path = self.dec_input.text().strip()
+        if not video_path or not os.path.exists(video_path):
+            self.media_player.stop()
+            return
+
+        source_url = QUrl.fromLocalFile(os.path.abspath(video_path))
+        self.media_player.setSource(source_url)
+        if auto_play:
+            self.media_player.play()
 
     def _build_tests_tab(self):
         layout = QVBoxLayout(self.tab_tests)
@@ -633,6 +678,7 @@ class CameraDropGUI(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(self, "Select Input Video")
         if file_path:
             self.dec_input.setText(file_path)
+            self._update_video_preview_source(auto_play=True)
 
     def _browse_decoder_output(self):
         file_path, _ = QFileDialog.getSaveFileName(self, "Select Decoded File")
