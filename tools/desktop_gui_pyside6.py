@@ -11,6 +11,7 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSlider,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -301,6 +303,15 @@ class CameraDropGUI(QMainWindow):
         self.video_widget = QVideoWidget()
         self.media_player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
+        self.preview_play_btn = QPushButton("Play")
+        self.preview_pause_btn = QPushButton("Pause")
+        self.preview_stop_btn = QPushButton("Stop")
+        self.preview_seek = QSlider(Qt.Horizontal)
+        self.preview_time_label = QLabel("00:00 / 00:00")
+        self.preview_size_combo = QComboBox()
+        self._preview_duration = 0
+        self._seeking = False
+        self._current_preview_path = ""
         self.dec_input.editingFinished.connect(lambda: self._update_video_preview_source(auto_play=False))
 
         central = QWidget(self)
@@ -342,6 +353,10 @@ class CameraDropGUI(QMainWindow):
         root_layout.addWidget(console_group, stretch=1)
 
         self.log_signal.connect(self.log)
+
+        self.media_player.positionChanged.connect(self._on_media_position_changed)
+        self.media_player.durationChanged.connect(self._on_media_duration_changed)
+        self.media_player.errorOccurred.connect(self._on_media_error)
 
     def log(self, message):
         self.console.append(message)
@@ -597,9 +612,43 @@ class CameraDropGUI(QMainWindow):
         self.video_widget.setMinimumHeight(220)
         preview_layout.addWidget(self.video_widget)
 
+        controls_row = QHBoxLayout()
+        self.preview_play_btn.clicked.connect(self._play_preview)
+        self.preview_pause_btn.clicked.connect(self._pause_preview)
+        self.preview_stop_btn.clicked.connect(self._stop_preview)
+        controls_row.addWidget(self.preview_play_btn)
+        controls_row.addWidget(self.preview_pause_btn)
+        controls_row.addWidget(self.preview_stop_btn)
+        controls_row.addSpacing(10)
+        controls_row.addWidget(QLabel("Preview Size:"))
+
+        self.preview_size_combo.addItems([
+            "Auto",
+            "Small (320x180)",
+            "Medium (480x270)",
+            "Large (640x360)",
+            "XL (800x450)",
+        ])
+        self.preview_size_combo.currentTextChanged.connect(self._apply_preview_size)
+        controls_row.addWidget(self.preview_size_combo)
+        controls_row.addStretch(1)
+        preview_layout.addLayout(controls_row)
+
+        seek_row = QHBoxLayout()
+        self.preview_seek.setEnabled(False)
+        self.preview_seek.setRange(0, 0)
+        self.preview_seek.sliderPressed.connect(self._on_seek_pressed)
+        self.preview_seek.sliderReleased.connect(self._on_seek_released)
+        self.preview_seek.sliderMoved.connect(self._on_seek_moved)
+        seek_row.addWidget(self.preview_seek, stretch=1)
+        seek_row.addWidget(self.preview_time_label)
+        preview_layout.addLayout(seek_row)
+
         self.media_player.setVideoOutput(self.video_widget)
         self.media_player.setAudioOutput(self.audio_output)
         self.audio_output.setVolume(0.0)
+        self._set_preview_controls_enabled(False)
+        self._apply_preview_size(self.preview_size_combo.currentText())
 
         self.preview_group.setVisible(False)
         layout.addWidget(self.preview_group, 3, 0, 1, 3)
@@ -621,6 +670,7 @@ class CameraDropGUI(QMainWindow):
             self._update_video_preview_source(auto_play=True)
         else:
             self.media_player.stop()
+            self._set_preview_controls_enabled(False)
 
     def _update_video_preview_source(self, auto_play=False):
         if not self.preview_toggle.isChecked():
@@ -629,12 +679,95 @@ class CameraDropGUI(QMainWindow):
         video_path = self.dec_input.text().strip()
         if not video_path or not os.path.exists(video_path):
             self.media_player.stop()
+            self._set_preview_controls_enabled(False)
+            self.preview_time_label.setText("00:00 / 00:00")
             return
 
-        source_url = QUrl.fromLocalFile(os.path.abspath(video_path))
-        self.media_player.setSource(source_url)
+        normalized = os.path.abspath(video_path)
+        if normalized != self._current_preview_path:
+            source_url = QUrl.fromLocalFile(normalized)
+            self.media_player.setSource(source_url)
+            self._current_preview_path = normalized
+
+        self._set_preview_controls_enabled(True)
         if auto_play:
             self.media_player.play()
+
+    def _set_preview_controls_enabled(self, enabled):
+        self.preview_play_btn.setEnabled(enabled)
+        self.preview_pause_btn.setEnabled(enabled)
+        self.preview_stop_btn.setEnabled(enabled)
+        self.preview_seek.setEnabled(enabled)
+
+    def _play_preview(self):
+        self._update_video_preview_source(auto_play=True)
+
+    def _pause_preview(self):
+        self.media_player.pause()
+
+    def _stop_preview(self):
+        self.media_player.stop()
+
+    def _on_media_position_changed(self, position):
+        if not self._seeking:
+            self.preview_seek.setValue(int(position))
+        self.preview_time_label.setText(
+            f"{self._format_ms(position)} / {self._format_ms(self._preview_duration)}"
+        )
+
+    def _on_media_duration_changed(self, duration):
+        self._preview_duration = max(0, int(duration))
+        self.preview_seek.setRange(0, self._preview_duration)
+        self.preview_time_label.setText(
+            f"{self._format_ms(self.media_player.position())} / {self._format_ms(self._preview_duration)}"
+        )
+
+    def _on_seek_pressed(self):
+        self._seeking = True
+
+    def _on_seek_moved(self, position):
+        self.preview_time_label.setText(
+            f"{self._format_ms(position)} / {self._format_ms(self._preview_duration)}"
+        )
+
+    def _on_seek_released(self):
+        self._seeking = False
+        self.media_player.setPosition(self.preview_seek.value())
+
+    def _on_media_error(self, *args):
+        if len(args) == 2:
+            error, error_string = args
+        elif len(args) == 1:
+            error, error_string = args[0], "Unknown media error"
+        else:
+            error, error_string = QMediaPlayer.ResourceError, "Unknown media error"
+        if error == QMediaPlayer.NoError:
+            return
+        self.log(f"[Preview Error] {error_string}")
+
+    def _apply_preview_size(self, choice):
+        presets = {
+            "Small (320x180)": (320, 180),
+            "Medium (480x270)": (480, 270),
+            "Large (640x360)": (640, 360),
+            "XL (800x450)": (800, 450),
+        }
+
+        if choice in presets:
+            width, height = presets[choice]
+            self.video_widget.setMinimumSize(width, height)
+            self.video_widget.setMaximumHeight(height)
+        else:
+            self.video_widget.setMinimumHeight(220)
+            self.video_widget.setMaximumHeight(16777215)
+
+    def _format_ms(self, value_ms):
+        total_seconds = max(0, int(value_ms) // 1000)
+        minutes, seconds = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:02d}:{seconds:02d}"
 
     def _build_tests_tab(self):
         layout = QVBoxLayout(self.tab_tests)
