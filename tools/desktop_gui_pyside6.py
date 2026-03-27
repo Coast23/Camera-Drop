@@ -306,6 +306,7 @@ class CameraDropGUI(QMainWindow):
         self.preview_play_btn = QPushButton("Play")
         self.preview_pause_btn = QPushButton("Pause")
         self.preview_stop_btn = QPushButton("Stop")
+        self.preview_fullscreen_btn = QPushButton("Fullscreen")
         self.preview_seek = QSlider(Qt.Horizontal)
         self.preview_time_label = QLabel("00:00 / 00:00")
         self.preview_size_combo = QComboBox()
@@ -616,9 +617,11 @@ class CameraDropGUI(QMainWindow):
         self.preview_play_btn.clicked.connect(self._play_preview)
         self.preview_pause_btn.clicked.connect(self._pause_preview)
         self.preview_stop_btn.clicked.connect(self._stop_preview)
+        self.preview_fullscreen_btn.clicked.connect(self._toggle_preview_fullscreen)
         controls_row.addWidget(self.preview_play_btn)
         controls_row.addWidget(self.preview_pause_btn)
         controls_row.addWidget(self.preview_stop_btn)
+        controls_row.addWidget(self.preview_fullscreen_btn)
         controls_row.addSpacing(10)
         controls_row.addWidget(QLabel("Preview Size:"))
 
@@ -646,6 +649,7 @@ class CameraDropGUI(QMainWindow):
 
         self.media_player.setVideoOutput(self.video_widget)
         self.media_player.setAudioOutput(self.audio_output)
+        self.video_widget.fullScreenChanged.connect(self._on_preview_fullscreen_changed)
         self.audio_output.setVolume(0.0)
         self._set_preview_controls_enabled(False)
         self._apply_preview_size(self.preview_size_combo.currentText())
@@ -669,6 +673,8 @@ class CameraDropGUI(QMainWindow):
         if checked:
             self._update_video_preview_source(auto_play=True)
         else:
+            if self.video_widget.isFullScreen():
+                self.video_widget.setFullScreen(False)
             self.media_player.stop()
             self._set_preview_controls_enabled(False)
 
@@ -697,6 +703,7 @@ class CameraDropGUI(QMainWindow):
         self.preview_play_btn.setEnabled(enabled)
         self.preview_pause_btn.setEnabled(enabled)
         self.preview_stop_btn.setEnabled(enabled)
+        self.preview_fullscreen_btn.setEnabled(enabled)
         self.preview_seek.setEnabled(enabled)
 
     def _play_preview(self):
@@ -707,6 +714,12 @@ class CameraDropGUI(QMainWindow):
 
     def _stop_preview(self):
         self.media_player.stop()
+
+    def _toggle_preview_fullscreen(self):
+        self.video_widget.setFullScreen(not self.video_widget.isFullScreen())
+
+    def _on_preview_fullscreen_changed(self, is_fullscreen):
+        self.preview_fullscreen_btn.setText("Exit Fullscreen" if is_fullscreen else "Fullscreen")
 
     def _on_media_position_changed(self, position):
         if not self._seeking:
