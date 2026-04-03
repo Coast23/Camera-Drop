@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -32,6 +33,11 @@ struct Options {
     std::string capture_dir;
     std::string model_path = "web/model/best_dynamic.onnx";
     std::string pattern_dir = "pattern_finder/best_v2";
+    std::string pattern_cnn_model_path;
+    std::string dump_source_deskew_dir;
+    std::string dump_capture_deskew_dir;
+    std::string dump_source_payload_csv;
+    std::string dump_capture_payload_csv;
     bool capture_deskewed = false;
     bool source_deskewed = false;
     bool patch_track = false;
@@ -58,6 +64,9 @@ void print_usage() {
     std::cout
         << "Usage: realshot_compare --source-dir <dir> --capture-dir <dir>\n"
         << "                       [--model <onnx>] [--patterns <dir>]\n"
+        << "                       [--pattern-cnn-model <onnx>]\n"
+        << "                       [--dump-source-deskew-dir <dir>] [--dump-capture-deskew-dir <dir>]\n"
+        << "                       [--dump-source-payload-csv <csv>] [--dump-capture-payload-csv <csv>]\n"
         << "                       [--capture-deskewed] [--source-deskewed] [--no-patch-track]\n"
         << "                       [--threads <n>] [--ort-threads <n>]\n";
 }
@@ -74,6 +83,16 @@ Options parse_args(int argc, char** argv) {
             opts.model_path = argv[++i];
         } else if (arg == "--patterns" && i + 1 < argc) {
             opts.pattern_dir = argv[++i];
+        } else if (arg == "--pattern-cnn-model" && i + 1 < argc) {
+            opts.pattern_cnn_model_path = argv[++i];
+        } else if (arg == "--dump-source-deskew-dir" && i + 1 < argc) {
+            opts.dump_source_deskew_dir = argv[++i];
+        } else if (arg == "--dump-capture-deskew-dir" && i + 1 < argc) {
+            opts.dump_capture_deskew_dir = argv[++i];
+        } else if (arg == "--dump-source-payload-csv" && i + 1 < argc) {
+            opts.dump_source_payload_csv = argv[++i];
+        } else if (arg == "--dump-capture-payload-csv" && i + 1 < argc) {
+            opts.dump_capture_payload_csv = argv[++i];
         } else if (arg == "--capture-deskewed") {
             opts.capture_deskewed = true;
         } else if (arg == "--source-deskewed") {
@@ -145,10 +164,26 @@ double measure_blur_score(const cv::Mat& img, double margin_ratio = 0.08, int sa
     return count > 0 ? (sum / static_cast<double>(count)) : 0.0;
 }
 
+void ensure_dir(const fs::path& dir) {
+    if (dir.empty()) return;
+    fs::create_directories(dir);
+}
+
+std::string join_symbols_hex(const std::vector<uint8_t>& symbols) {
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (size_t i = 0; i < symbols.size(); ++i) {
+        if (i) oss << ' ';
+        oss << std::setw(2) << static_cast<int>(symbols[i]);
+    }
+    return oss.str();
+}
+
 FrameData process_file(const fs::path& path,
                        camdrop::vision::FramePipeline* pipeline,
                        camdrop::vision::PatternRecognizer* recognizer,
-                       bool deskewed_input) {
+                       bool deskewed_input,
+                       const fs::path& dump_deskew_dir) {
     const cv::Mat image = cv::imread(path.string(), cv::IMREAD_COLOR);
     if (image.empty()) {
         throw std::runtime_error("failed to load image: " + path.string());
@@ -166,6 +201,10 @@ FrameData process_file(const fs::path& path,
         }
         out.payload_symbols = decoded.payload_symbols;
         out.blur_score = measure_blur_score(image);
+        if (!dump_deskew_dir.empty()) {
+            ensure_dir(dump_deskew_dir);
+            cv::imwrite((dump_deskew_dir / path.filename()).string(), image);
+        }
         return out;
     }
 
@@ -183,13 +222,19 @@ FrameData process_file(const fs::path& path,
     }
     out.payload_symbols = result.recognize.payload_symbols;
     out.blur_score = measure_blur_score(result.deskewed_image);
+    if (!dump_deskew_dir.empty()) {
+        ensure_dir(dump_deskew_dir);
+        cv::imwrite((dump_deskew_dir / path.filename()).string(), result.deskewed_image);
+    }
     return out;
 }
 
 std::vector<FrameData> load_frames(const std::vector<fs::path>& files,
                                    const std::string& model_path,
                                    const std::string& pattern_dir,
+                                   const std::string& pattern_cnn_model_path,
                                    bool deskewed_input,
+                                   const fs::path& dump_deskew_dir,
                                    size_t threads,
                                    int ort_threads) {
     struct Worker {
@@ -212,6 +257,7 @@ std::vector<FrameData> load_frames(const std::vector<fs::path>& files,
                 camdrop::vision::FramePipelineConfig cfg;
                 cfg.model_path = model_path;
                 cfg.pattern_dir = pattern_dir;
+                cfg.pattern_cnn_model_path = pattern_cnn_model_path;
                 cfg.patch_track_enabled = false;
                 cfg.localizer_options.ort_threads = std::max(1, ort_threads);
                 w.pipeline.emplace(cfg);
@@ -223,7 +269,8 @@ std::vector<FrameData> load_frames(const std::vector<fs::path>& files,
                 files[i],
                 w.pipeline ? &(*w.pipeline) : nullptr,
                 w.recognizer ? &(*w.recognizer) : nullptr,
-                deskewed_input);
+                deskewed_input,
+                dump_deskew_dir);
             const size_t cur = ++done;
             if (cur == files.size() || (cur % 25 == 0)) {
                 std::lock_guard<std::mutex> lock(log_mu);
@@ -309,11 +356,50 @@ void update_localize_stats(const FrameData& frame, LocalizeStats& stats) {
     }
 }
 
+fs::path find_resource(const char* argv0, const char* relative_path) {
+    fs::path exe_dir = fs::absolute(fs::path(argv0)).parent_path();
+    fs::path local = exe_dir / relative_path;
+    if (fs::exists(local)) return local;
+    const char* source_dir = std::getenv("CAMDROP_SOURCE_DIR");
+    if (source_dir) {
+        fs::path dev = fs::path(source_dir) / relative_path;
+        if (fs::exists(dev)) return dev;
+    }
+    return {};
+}
+
+fs::path default_model_path(const char* argv0) {
+    auto p = find_resource(argv0, "web/model/best_dynamic.onnx");
+    if (!p.empty()) return p;
+    return "web/model/best_dynamic.onnx";
+}
+
+fs::path default_pattern_dir(const char* argv0) {
+    auto p = find_resource(argv0, "pattern_finder/best_v2");
+    if (!p.empty()) return p;
+    return "pattern_finder/best_v2";
+}
+
+fs::path default_pattern_cnn_model_path(const char* argv0) {
+    return find_resource(argv0, "cnn/models/pattern_cnn_se110.onnx");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     try {
-        const Options opts = parse_args(argc, argv);
+        Options opts = parse_args(argc, argv);
+        if (opts.model_path == "web/model/best_dynamic.onnx") {
+            opts.model_path = default_model_path(argv[0]).string();
+        }
+        if (opts.pattern_dir == "pattern_finder/best_v2") {
+            opts.pattern_dir = default_pattern_dir(argv[0]).string();
+        }
+        if (opts.pattern_cnn_model_path.empty()) {
+            opts.pattern_cnn_model_path = default_pattern_cnn_model_path(argv[0]).string();
+        }
+        ensure_dir(opts.dump_source_deskew_dir);
+        ensure_dir(opts.dump_capture_deskew_dir);
         const size_t threads = camdrop::util::resolve_thread_count(opts.threads);
         const int ort_threads = std::max(1, opts.ort_threads);
         camdrop::vision::PatternDictionary dict =
@@ -332,7 +418,9 @@ int main(int argc, char** argv) {
             source_files,
             opts.model_path,
             opts.pattern_dir,
+            opts.pattern_cnn_model_path,
             opts.source_deskewed,
+            opts.dump_source_deskew_dir,
             threads,
             ort_threads);
         std::cout << "loading capture frames...\n";
@@ -340,9 +428,30 @@ int main(int argc, char** argv) {
             capture_files,
             opts.model_path,
             opts.pattern_dir,
+            opts.pattern_cnn_model_path,
             opts.capture_deskewed,
+            opts.dump_capture_deskew_dir,
             threads,
             ort_threads);
+
+        auto dump_payload_csv = [](const std::string& path, const std::vector<FrameData>& frames) {
+            if (path.empty()) return;
+            std::ofstream out(path, std::ios::out | std::ios::trunc);
+            if (!out) {
+                throw std::runtime_error("failed to open payload csv: " + path);
+            }
+            out << "frame_name,payload_symbol_count,payload_symbols_hex,blur_score,localized,localize_source\n";
+            for (const auto& frame : frames) {
+                out << frame.name << ','
+                    << frame.payload_symbols.size() << ','
+                    << '"' << join_symbols_hex(frame.payload_symbols) << '"' << ','
+                    << std::fixed << std::setprecision(6) << frame.blur_score << ','
+                    << (frame.localized ? 1 : 0) << ','
+                    << frame.localize_source << '\n';
+            }
+        };
+        dump_payload_csv(opts.dump_source_payload_csv, source_frames);
+        dump_payload_csv(opts.dump_capture_payload_csv, capture_frames);
 
         std::vector<FrameData> valid_source;
         for (const auto& item : source_frames) {

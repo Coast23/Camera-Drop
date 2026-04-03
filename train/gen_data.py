@@ -258,9 +258,9 @@ def generate_sample(templates, bg_imgs, bg_w, bg_h):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--template",    default="build",
+    ap.add_argument("--template",    default="test/build",
                     help="模板图像路径或包含多张模板的目录")
-    ap.add_argument("--out",         default="scripts/combined_dataset")
+    ap.add_argument("--out",         default="test/scripts/combined_dataset")
     ap.add_argument("--n",           type=int,   default=12000)
     ap.add_argument("--val_ratio",   type=float, default=0.15)
     ap.add_argument("--bg_w",        type=int,   default=640)

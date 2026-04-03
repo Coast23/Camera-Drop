@@ -9,7 +9,11 @@
 #include <string>
 #include <vector>
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <process.h>
+#include <windows.h>
 #endif
 
 #include <opencv2/imgcodecs.hpp>
@@ -29,21 +33,43 @@ namespace {
 struct Options {
     std::string input_file;
     std::string out_dir = "out_frames";
-    std::string pattern_dir = "web/pattern_sets/best_v2";
+    std::string pattern_dir = "pattern_finder/best_v2";
     std::string video_out;
     std::string ffmpeg_bin;
     double acc = 0.95;
-    int fps = 30;
+    int fps = Config::OUTPUT_FPS;
     int repeat = 1;
-    int ffmpeg_crf = 0;
+    int ffmpeg_crf = 12;
     std::string ffmpeg_preset = "slow";
-    std::string ffmpeg_pix_fmt = "yuv444p";
-    int screen_width = 1920;
-    int screen_height = 1080;
+    std::string ffmpeg_pix_fmt = "yuv420p";
+    int screen_width = 0;
+    int screen_height = 0;
     int code_size = 0;
     double code_fit = 0.96;
     bool wrap_screen = true;
+    int limit_frames = 0;
     int threads = 0;
+};
+
+struct ScreenPlacementInfo {
+    double fit_scale = 1.0;
+    double requested_scale = 1.0;
+    double safe_scale = 1.0;
+    int target_w = 0;
+    int target_h = 0;
+    double scaled_stride = 0.0;
+    double scaled_tile = 0.0;
+    double scaled_gap = 0.0;
+    bool has_resample = false;
+    bool downscaled = false;
+    bool fractional_scale = false;
+    bool snapped_to_integer = false;
+    bool gap_collapse_risk = false;
+};
+
+struct ScreenSize {
+    int width = 0;
+    int height = 0;
 };
 
 std::string quote_arg(const std::string& value) {
@@ -56,10 +82,78 @@ std::string quote_arg(const std::string& value) {
     return out;
 }
 
+#ifdef _WIN32
+void enable_windows_dpi_awareness() {
+    HMODULE user32 = LoadLibraryA("user32.dll");
+    if (user32) {
+        using SetProcessDpiAwarenessContextFn = BOOL (WINAPI*)(HANDLE);
+        const auto set_context = reinterpret_cast<SetProcessDpiAwarenessContextFn>(
+            GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
+        if (set_context) {
+            if (set_context(reinterpret_cast<HANDLE>(-4))) {
+                FreeLibrary(user32);
+                return;
+            }
+            if (set_context(reinterpret_cast<HANDLE>(-3))) {
+                FreeLibrary(user32);
+                return;
+            }
+        }
+
+        using SetProcessDPIAwareFn = BOOL (WINAPI*)();
+        const auto set_aware = reinterpret_cast<SetProcessDPIAwareFn>(
+            GetProcAddress(user32, "SetProcessDPIAware"));
+        if (set_aware) {
+            set_aware();
+        }
+        FreeLibrary(user32);
+    }
+}
+
+ScreenSize detect_primary_screen_size() {
+    DEVMODEA mode{};
+    mode.dmSize = sizeof(mode);
+    if (EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &mode)
+        && mode.dmPelsWidth > 0
+        && mode.dmPelsHeight > 0) {
+        return {static_cast<int>(mode.dmPelsWidth), static_cast<int>(mode.dmPelsHeight)};
+    }
+    const int width = GetSystemMetrics(SM_CXSCREEN);
+    const int height = GetSystemMetrics(SM_CYSCREEN);
+    return {std::max(0, width), std::max(0, height)};
+}
+#else
+void enable_windows_dpi_awareness() {}
+
+ScreenSize detect_primary_screen_size() {
+    return {};
+}
+#endif
+
+void resolve_screen_size(Options& opts) {
+    if (opts.screen_width > 0 && opts.screen_height > 0) {
+        return;
+    }
+    const ScreenSize detected = detect_primary_screen_size();
+    if (opts.screen_width <= 0 && detected.width > 0) {
+        opts.screen_width = detected.width;
+    }
+    if (opts.screen_height <= 0 && detected.height > 0) {
+        opts.screen_height = detected.height;
+    }
+    if (opts.screen_width <= 0) {
+        opts.screen_width = 1920;
+    }
+    if (opts.screen_height <= 0) {
+        opts.screen_height = 1080;
+    }
+}
+
 void print_usage() {
     std::cout
         << "Usage: file_video_encoder --input <file> [--out-dir <dir>] [--patterns <dir>]\n"
         << "                          [--acc <0..1>] [--fps <n>] [--repeat <n>] [--threads <n>]\n"
+        << "                          [--limit-frames <n>]\n"
         << "                          [--screen-width <n>] [--screen-height <n>]\n"
         << "                          [--code-size <n>] [--code-fit <0..1>] [--raw-frame-output]\n"
         << "                          [--video-out <file>] [--ffmpeg-bin <path>]\n"
@@ -94,6 +188,8 @@ Options parse_args(int argc, char** argv) {
             opts.fps = std::stoi(argv[++i]);
         } else if (arg == "--repeat" && i + 1 < argc) {
             opts.repeat = std::stoi(argv[++i]);
+        } else if (arg == "--limit-frames" && i + 1 < argc) {
+            opts.limit_frames = std::stoi(argv[++i]);
         } else if (arg == "--screen-width" && i + 1 < argc) {
             opts.screen_width = std::stoi(argv[++i]);
         } else if (arg == "--screen-height" && i + 1 < argc) {
@@ -117,16 +213,50 @@ Options parse_args(int argc, char** argv) {
     if (opts.repeat <= 0) {
         throw ConfigRangeError("Repeat must be > 0, got " + std::to_string(opts.repeat));
     }
+    if (opts.limit_frames < 0) {
+        throw ConfigRangeError("Limit-frames must be >= 0, got " + std::to_string(opts.limit_frames));
+    }
     if (!(opts.acc > 0.0 && opts.acc <= 1.0)) {
         throw ConfigRangeError("Accuracy must be in (0, 1], got " + std::to_string(opts.acc));
     }
-    if (opts.screen_width <= 0 || opts.screen_height <= 0) {
-        throw ConfigRangeError("Screen size must be > 0");
+    if (opts.screen_width < 0 || opts.screen_height < 0) {
+        throw ConfigRangeError("Screen size must be >= 0");
     }
     if (!(opts.code_fit > 0.0 && opts.code_fit <= 1.0)) {
         throw ConfigRangeError("Code-fit must be in (0, 1], got " + std::to_string(opts.code_fit));
     }
     return opts;
+}
+
+ScreenPlacementInfo compute_screen_placement(int code_w, int code_h, const Options& opts) {
+    ScreenPlacementInfo info;
+    const int short_edge = std::min(code_w, code_h);
+    const double hard_fit_scale = std::min(
+        static_cast<double>(opts.screen_width) / static_cast<double>(code_w),
+        static_cast<double>(opts.screen_height) / static_cast<double>(code_h));
+    info.fit_scale = std::min(
+        (static_cast<double>(opts.screen_width) * opts.code_fit) / static_cast<double>(code_w),
+        (static_cast<double>(opts.screen_height) * opts.code_fit) / static_cast<double>(code_h));
+    info.requested_scale = opts.code_size > 0
+        ? static_cast<double>(opts.code_size) / static_cast<double>(std::max(1, short_edge))
+        : info.fit_scale;
+    const double bounded_scale = std::min(info.requested_scale, hard_fit_scale);
+    if (bounded_scale >= 1.0) {
+        info.safe_scale = std::max(1.0, std::floor(bounded_scale + 1e-9));
+        info.snapped_to_integer = std::abs(info.safe_scale - bounded_scale) > 1e-6;
+    } else {
+        info.safe_scale = bounded_scale;
+    }
+    info.target_w = std::max(64, std::min(opts.screen_width, static_cast<int>(std::lround(code_w * info.safe_scale))));
+    info.target_h = std::max(64, std::min(opts.screen_height, static_cast<int>(std::lround(code_h * info.safe_scale))));
+    info.scaled_stride = Config::STRIDE * info.safe_scale;
+    info.scaled_tile = Config::TILE_SIZE * info.safe_scale;
+    info.scaled_gap = (Config::STRIDE - Config::TILE_SIZE) * info.safe_scale;
+    info.has_resample = (code_w != info.target_w) || (code_h != info.target_h);
+    info.downscaled = info.safe_scale < 1.0 - 1e-6;
+    info.fractional_scale = std::abs(info.safe_scale - std::round(info.safe_scale)) > 1e-6;
+    info.gap_collapse_risk = info.scaled_gap < 1.0;
+    return info;
 }
 
 cv::Mat compose_screen_frame(const cv::Mat& code_image, const Options& opts) {
@@ -135,22 +265,18 @@ cv::Mat compose_screen_frame(const cv::Mat& code_image, const Options& opts) {
     }
     const int screen_w = opts.screen_width;
     const int screen_h = opts.screen_height;
-    const int max_size = std::min(screen_w, screen_h);
-    int code_size = opts.code_size > 0
-      ? opts.code_size
-      : static_cast<int>(std::lround(static_cast<double>(max_size) * opts.code_fit));
-    code_size = std::max(64, std::min(code_size, max_size));
+    const ScreenPlacementInfo placement = compute_screen_placement(code_image.cols, code_image.rows, opts);
 
     cv::Mat screen(screen_h, screen_w, CV_8UC3, cv::Scalar(0, 0, 0));
     cv::Mat scaled;
-    if (code_image.cols != code_size || code_image.rows != code_size) {
-        cv::resize(code_image, scaled, cv::Size(code_size, code_size), 0.0, 0.0, cv::INTER_NEAREST);
+    if (placement.has_resample) {
+        cv::resize(code_image, scaled, cv::Size(placement.target_w, placement.target_h), 0.0, 0.0, cv::INTER_NEAREST);
     } else {
         scaled = code_image;
     }
-    const int x = (screen_w - code_size) / 2;
-    const int y = (screen_h - code_size) / 2;
-    scaled.copyTo(screen(cv::Rect(x, y, code_size, code_size)));
+    const int x = (screen_w - placement.target_w) / 2;
+    const int y = (screen_h - placement.target_h) / 2;
+    scaled.copyTo(screen(cv::Rect(x, y, placement.target_w, placement.target_h)));
     return screen;
 }
 
@@ -193,6 +319,7 @@ int build_video_with_ffmpeg(const Options& opts, const fs::path& out_dir) {
         << " -crf " << opts.ffmpeg_crf
         << " -pix_fmt " << quote_arg(opts.ffmpeg_pix_fmt)
         << " -tune stillimage"
+        << " -movflags +faststart"
         << " " << quote_arg(opts.video_out);
     std::cout << "ffmpeg: " << cmd.str() << '\n';
 #ifdef _WIN32
@@ -213,6 +340,8 @@ int build_video_with_ffmpeg(const Options& opts, const fs::path& out_dir) {
         opts.ffmpeg_pix_fmt,
         "-tune",
         "stillimage",
+        "-movflags",
+        "+faststart",
         opts.video_out
     };
     std::vector<const char*> argv;
@@ -233,6 +362,10 @@ int build_video_with_ffmpeg(const Options& opts, const fs::path& out_dir) {
 int main(int argc, char** argv) {
     try {
         Options opts = parse_args(argc, argv);
+#ifdef _WIN32
+        enable_windows_dpi_awareness();
+#endif
+        resolve_screen_size(opts);
         if (opts.ffmpeg_bin.empty()) {
             opts.ffmpeg_bin = find_embedded_ffmpeg(argv[0]).string();
         }
@@ -245,29 +378,62 @@ int main(int argc, char** argv) {
             camdrop::vision::PatternDictionary::LoadFromDirectory(opts.pattern_dir);
         camdrop::vision::PatternFrameRenderer renderer(dict);
 
-        Encoder encoder(opts.input_file);
+        EncoderOptions encoder_opts;
+        encoder_opts.logical_frame_limit = static_cast<uint32_t>(std::max(0, opts.limit_frames));
+        Encoder encoder(opts.input_file, encoder_opts);
         if (!encoder.is_valid()) {
             throw EncoderInitError("Encoder initialization failed");
         }
 
-        const uint32_t packet_count = encoder.packet_count_recommended();
-        const uint32_t logical_frames = (packet_count + Config::FOUNTAIN_PACKETS_PER_FRAME - 1)
-                                      / Config::FOUNTAIN_PACKETS_PER_FRAME;
+        const uint32_t packet_count_required = encoder.packet_count_required();
+        const uint32_t packet_count_recommended = encoder.packet_count_recommended();
+        const uint32_t logical_frames = opts.limit_frames > 0
+            ? static_cast<uint32_t>(opts.limit_frames)
+            : (packet_count_recommended + Config::FOUNTAIN_PACKETS_PER_FRAME - 1)
+              / Config::FOUNTAIN_PACKETS_PER_FRAME;
+        const uint32_t emitted_packet_count = logical_frames * Config::FOUNTAIN_PACKETS_PER_FRAME;
 
         std::cout << "input: " << fs::absolute(opts.input_file).string() << '\n';
         std::cout << "patterns: " << fs::absolute(opts.pattern_dir).string() << '\n';
         std::cout << "out_dir: " << out_dir.string() << '\n';
-        std::cout << "packet_count_recommended: " << packet_count << '\n';
+        std::cout << "input_file_bytes: " << encoder.source_file_size() << '\n';
+        std::cout << "input_bytes_used: " << encoder.source_bytes_read() << '\n';
+        std::cout << "input_truncated: " << (encoder.input_truncated() ? "yes" : "no") << '\n';
+        std::cout << "compressed_bytes: " << encoder.compressed_size() << '\n';
+        std::cout << "packet_count_required: " << packet_count_required << '\n';
+        std::cout << "packet_count_recommended: " << packet_count_recommended << '\n';
+        if (opts.limit_frames > 0) {
+            std::cout << "logical_frame_limit: " << opts.limit_frames << '\n';
+            std::cout << "packet_count_emitted: " << emitted_packet_count << '\n';
+        }
         std::cout << "logical_frames: " << logical_frames << '\n';
         std::cout << "written_frames: " << static_cast<uint64_t>(logical_frames) * static_cast<uint64_t>(opts.repeat) << '\n';
         std::cout << "frame_payload_bytes: " << Config::PACKET_CAPACITY << '\n';
         if (opts.wrap_screen) {
-            const int max_size = std::min(opts.screen_width, opts.screen_height);
-            const int code_size = opts.code_size > 0
-              ? std::min(opts.code_size, max_size)
-              : static_cast<int>(std::lround(static_cast<double>(max_size) * opts.code_fit));
+            const ScreenPlacementInfo placement =
+                compute_screen_placement(Config::IMG_WIDTH, Config::IMG_HEIGHT, opts);
             std::cout << "screen_frame: " << opts.screen_width << 'x' << opts.screen_height << '\n';
-            std::cout << "screen_code_size: " << code_size << '\n';
+            std::cout << "screen_code_size: " << placement.target_w << 'x' << placement.target_h << '\n';
+            std::cout << "screen_scale: " << std::fixed << std::setprecision(6) << placement.safe_scale << '\n';
+            std::cout << "screen_stride_tile_gap: "
+                      << std::setprecision(3)
+                      << placement.scaled_stride << ','
+                      << placement.scaled_tile << ','
+                      << placement.scaled_gap << '\n';
+            if (placement.snapped_to_integer) {
+                std::cout << "note: screen scale snapped to an integer multiple to preserve uniform gaps\n";
+            }
+            if (placement.downscaled) {
+                std::cout << "warning: screen output is downscaled; 1px gaps may thin or disappear after resampling\n";
+            } else if (placement.has_resample) {
+                std::cout << "note: screen output uses integer nearest-neighbor scaling\n";
+            }
+            if (placement.fractional_scale) {
+                std::cout << "warning: non-integer screen scale will make gap width vary across tiles\n";
+            }
+            if (placement.gap_collapse_risk) {
+                std::cout << "warning: scaled gap is below 1px; adjacent patterns may visually merge on screen\n";
+            }
         } else {
             std::cout << "screen_frame: raw-code-frame" << '\n';
         }

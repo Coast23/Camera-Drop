@@ -14,6 +14,8 @@ namespace camdrop::vision {
 struct YoloLocalizerOptions {
     int input_size = 640;
     float conf_threshold = 0.35f;
+    float progressive_min_conf_threshold = 0.005f;
+    float progressive_conf_step = 0.05f;
     float anchor_expand = 0.05f;
     int ort_threads = 1;
     std::string input_name = "images";

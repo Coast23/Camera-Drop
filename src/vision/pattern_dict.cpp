@@ -1,6 +1,8 @@
 #include "vision/pattern_dict.hpp"
 
 #include <cstdio>
+#include <filesystem>
+#include <map>
 #include <stdexcept>
 
 #include <opencv2/imgcodecs.hpp>
@@ -10,6 +12,8 @@
 
 namespace camdrop::vision {
 namespace {
+
+namespace fs = std::filesystem;
 
 int pattern_bits_for_count(int count) {
     int bits = 0;
@@ -88,36 +92,84 @@ PatternDictionary PatternDictionary::LoadFromDirectory(const std::string& dir) {
     if (dir.empty()) {
         throw PatternDictLoadError("Empty directory path");
     }
-    
-    PatternDictionary dict;
-    dict.masks64.resize(16);
-    dict.lo.resize(16);
-    dict.hi.resize(16);
-    dict.masks16.resize(16);
 
-    for (int i = 0; i < 16; ++i) {
-        char name[16];
-        std::snprintf(name, sizeof(name), "%02x.png", i);
-        const std::string path = dir + "/" + name;
-        cv::Mat gray = cv::imread(path, cv::IMREAD_GRAYSCALE);
+    std::map<int, fs::path> files;
+    try {
+        for (const auto& entry : fs::directory_iterator(dir)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            const fs::path path = entry.path();
+            if (path.extension() != ".png") {
+                continue;
+            }
+            const std::string stem = path.stem().string();
+            if (stem.empty()) {
+                continue;
+            }
+            size_t parsed = 0;
+            int idx = -1;
+            try {
+                idx = std::stoi(stem, &parsed, 16);
+            } catch (const std::exception&) {
+                continue;
+            }
+            if (parsed != stem.size() || idx < 0) {
+                continue;
+            }
+            files[idx] = path;
+        }
+    } catch (const std::exception& e) {
+        throw PatternDictLoadError("Failed to enumerate pattern directory: " + dir + " (" + e.what() + ")");
+    }
+
+    if (files.empty()) {
+        throw PatternDictLoadError("No hex-named pattern images found in: " + dir);
+    }
+
+    const int expected_count = static_cast<int>(files.size());
+    int expected_index = 0;
+    for (const auto& [idx, path] : files) {
+        (void)path;
+        if (idx != expected_index) {
+            throw PatternDictLoadError(
+                "Pattern directory must contain contiguous hex indices starting at 00; missing index " +
+                std::to_string(expected_index));
+        }
+        ++expected_index;
+    }
+
+    PatternDictionary dict;
+    dict.masks64.resize(expected_count);
+    dict.lo.resize(expected_count);
+    dict.hi.resize(expected_count);
+    dict.masks16.resize(expected_count);
+
+    for (const auto& [idx, path] : files) {
+        cv::Mat gray = cv::imread(path.string(), cv::IMREAD_GRAYSCALE);
         if (gray.empty()) {
-            throw PatternDictLoadError("Failed to load pattern image: " + path);
+            throw PatternDictLoadError("Failed to load pattern image: " + path.string());
         }
         cv::Mat gray8;
         cv::resize(gray, gray8, cv::Size(8, 8), 0.0, 0.0, cv::INTER_NEAREST);
-        
+
         uint64_t mask;
         try {
             mask = mask_from_8x8_gray(gray8);
         } catch (const PatternDictError& e) {
-            throw PatternDictLoadError(std::string("Failed to process pattern ") + name + ": " + e.what());
+            throw PatternDictLoadError(std::string("Failed to process pattern ") + path.filename().string() + ": " + e.what());
         }
-        
+
         const auto parts = split_mask64(mask);
-        dict.masks64[i] = mask;
-        dict.lo[i] = parts.first;
-        dict.hi[i] = parts.second;
-        dict.masks16[i] = compress_mask64_to_16(parts.first, parts.second);
+        dict.masks64[idx] = mask;
+        dict.lo[idx] = parts.first;
+        dict.hi[idx] = parts.second;
+        dict.masks16[idx] = compress_mask64_to_16(parts.first, parts.second);
+    }
+
+    if ((expected_count & (expected_count - 1)) != 0) {
+        throw PatternDictLoadError(
+            "Pattern count must be a power of two, got " + std::to_string(expected_count));
     }
 
     return dict;

@@ -45,6 +45,11 @@ struct AnchorBuckets {
     std::vector<AnchorDetection> brs;
 };
 
+struct ProgressiveAnchorMatch {
+    AnchorBuckets buckets;
+    float threshold = 0.0f;
+};
+
 template <typename T>
 T clamp_value(T v, T lo, T hi) {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -542,8 +547,7 @@ static std::array<int, 3> order_normal_triple(const std::array<cv::Point2f, 3>& 
 CornerQuad build_corners_from_anchor_detections(
     const std::vector<AnchorDetection>& normals_in,
     const AnchorDetection& br_anchor,
-    const cv::Mat& frame,
-    float input_inv)
+    const cv::Mat& frame)
 {
     std::vector<AnchorDetection> normals = normals_in;
     std::sort(normals.begin(), normals.end(), [](const AnchorDetection& a, const AnchorDetection& b) {
@@ -563,20 +567,10 @@ CornerQuad build_corners_from_anchor_detections(
     const AnchorDetection& bl_anchor = normals[idx[2]];
 
     auto refine_normal = [&](const AnchorDetection& anchor) -> cv::Point2f {
-        const cv::Rect2f orig_box(
-            anchor.det.box.x * input_inv,
-            anchor.det.box.y * input_inv,
-            anchor.det.box.width * input_inv,
-            anchor.det.box.height * input_inv);
-        return refine_anchor_center_contour(frame, orig_box);
+        return refine_anchor_center_contour(frame, anchor.det.box);
     };
     auto refine_br = [&](const AnchorDetection& anchor) -> cv::Point2f {
-        const cv::Rect2f orig_box(
-            anchor.det.box.x * input_inv,
-            anchor.det.box.y * input_inv,
-            anchor.det.box.width * input_inv,
-            anchor.det.box.height * input_inv);
-        return refine_br_center_contour(frame, orig_box);
+        return refine_br_center_contour(frame, anchor.det.box);
     };
 
     return build_corners_from_centers({
@@ -587,9 +581,35 @@ CornerQuad build_corners_from_anchor_detections(
     });
 }
 
+std::vector<AnchorDetection> dedupe_anchor_detections(std::vector<AnchorDetection> anchors) {
+    std::sort(anchors.begin(), anchors.end(), [](const AnchorDetection& a, const AnchorDetection& b) {
+        return a.det.score > b.det.score;
+    });
+
+    std::vector<AnchorDetection> out;
+    out.reserve(anchors.size());
+    for (const auto& anchor : anchors) {
+        bool duplicate = false;
+        for (const auto& kept : out) {
+            const float anchor_size = std::max(anchor.det.box.width, anchor.det.box.height);
+            const float kept_size = std::max(kept.det.box.width, kept.det.box.height);
+            const float min_sep = std::max(12.0f, 0.45f * std::min(anchor_size, kept_size));
+            if (std::hypot(anchor.cx - kept.cx, anchor.cy - kept.cy) <= min_sep) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) {
+            out.push_back(anchor);
+        }
+    }
+    return out;
+}
+
 AnchorBuckets collect_anchor_detections(const std::vector<Detection>& all,
                                         const std::optional<cv::Rect2f>& frame_box,
-                                        float anchor_expand) {
+                                        float anchor_expand,
+                                        float conf_threshold) {
     AnchorBuckets out;
     float bx1 = 0.0f, by1 = 0.0f, bx2 = 0.0f, by2 = 0.0f;
     float ex = 0.0f, ey = 0.0f;
@@ -605,6 +625,7 @@ AnchorBuckets collect_anchor_detections(const std::vector<Detection>& all,
 
     for (const auto& det : all) {
         if (det.cls != kClsAnchor && det.cls != kClsAnchorBr) continue;
+        if (det.score < conf_threshold) continue;
         const float ax = det.box.x + det.box.width * 0.5f;
         const float ay = det.box.y + det.box.height * 0.5f;
         if (frame_box.has_value()) {
@@ -615,7 +636,34 @@ AnchorBuckets collect_anchor_detections(const std::vector<Detection>& all,
         if (det.cls == kClsAnchorBr) out.brs.push_back(anchor);
         else                          out.normals.push_back(anchor);
     }
+    out.normals = dedupe_anchor_detections(std::move(out.normals));
+    out.brs = dedupe_anchor_detections(std::move(out.brs));
     return out;
+}
+
+std::optional<ProgressiveAnchorMatch> find_progressive_anchor_match(
+    const std::vector<Detection>& detections,
+    const std::optional<cv::Rect2f>& frame_box,
+    float anchor_expand,
+    float start_threshold,
+    float min_threshold,
+    float step_threshold) {
+    const float start = std::max(start_threshold, min_threshold);
+    const float floor = std::max(0.0f, min_threshold);
+    const float step = std::max(0.001f, step_threshold);
+
+    float current = start;
+    while (true) {
+        AnchorBuckets buckets = collect_anchor_detections(detections, frame_box, anchor_expand, current);
+        if (buckets.normals.size() >= 3 && !buckets.brs.empty()) {
+            return ProgressiveAnchorMatch{std::move(buckets), current};
+        }
+        if (current <= floor + 1e-6f) {
+            break;
+        }
+        current = std::max(floor, current - step);
+    }
+    return std::nullopt;
 }
 
 std::vector<Detection> scale_detections(const std::vector<Detection>& detections, float inv) {
@@ -635,37 +683,52 @@ std::vector<Detection> scale_detections(const std::vector<Detection>& detections
 std::optional<LocalizeResult> assign_corners(const std::vector<Detection>& detections,
                                              const cv::Mat& frame,
                                              float input_inv,
-                                             float anchor_expand) {
+                                             float anchor_expand,
+                                             float start_threshold,
+                                             float min_threshold,
+                                             float step_threshold) {
+    const std::vector<Detection> scaled = scale_detections(detections, input_inv);
     std::optional<cv::Rect2f> best_frame;
     float best_frame_score = -1.0f;
-    for (const auto& det : detections) {
-        if (det.cls == kClsFrame && det.score > best_frame_score) {
+    for (const auto& det : scaled) {
+        if (det.cls == kClsFrame && det.score >= start_threshold && det.score > best_frame_score) {
             best_frame = det.box;
             best_frame_score = det.score;
         }
     }
+    if (!best_frame.has_value()) {
+        for (const auto& det : scaled) {
+            if (det.cls == kClsFrame && det.score > best_frame_score) {
+                best_frame = det.box;
+                best_frame_score = det.score;
+            }
+        }
+    }
 
     if (best_frame.has_value()) {
-        AnchorBuckets scoped = collect_anchor_detections(detections, best_frame, anchor_expand);
-        if (scoped.normals.size() >= 3 && !scoped.brs.empty()) {
+        const auto scoped_match = find_progressive_anchor_match(
+            scaled, best_frame, anchor_expand, start_threshold, min_threshold, step_threshold);
+        if (scoped_match.has_value()) {
+            AnchorBuckets scoped = scoped_match->buckets;
             std::sort(scoped.brs.begin(), scoped.brs.end(), [](const AnchorDetection& a, const AnchorDetection& b) {
                 return a.det.score > b.det.score;
             });
             LocalizeResult result;
             result.ok = true;
-            result.corners = build_corners_from_anchor_detections(
-                scoped.normals, scoped.brs[0], frame, input_inv);
-            result.detections = scale_detections(detections, input_inv);
-            result.frame_box = cv::Rect2f(
-                best_frame->x * input_inv, best_frame->y * input_inv,
-                best_frame->width * input_inv, best_frame->height * input_inv);
+            result.corners = build_corners_from_anchor_detections(scoped.normals, scoped.brs[0], frame);
+            result.detections = scaled;
+            result.frame_box = *best_frame;
             result.has_frame = true;
+            result.source = "yolo+contour-progressive";
             return result;
         }
     }
 
-    AnchorBuckets global = collect_anchor_detections(detections, std::nullopt, anchor_expand);
-    if (global.normals.size() < 3 || global.brs.empty()) return std::nullopt;
+    const auto global_match = find_progressive_anchor_match(
+        scaled, std::nullopt, anchor_expand, start_threshold, min_threshold, step_threshold);
+    if (!global_match.has_value()) return std::nullopt;
+
+    AnchorBuckets global = global_match->buckets;
 
     std::sort(global.brs.begin(), global.brs.end(), [](const AnchorDetection& a, const AnchorDetection& b) {
         return a.det.score > b.det.score;
@@ -673,15 +736,13 @@ std::optional<LocalizeResult> assign_corners(const std::vector<Detection>& detec
 
     LocalizeResult result;
     result.ok = true;
-    result.corners = build_corners_from_anchor_detections(
-        global.normals, global.brs[0], frame, input_inv);
-    result.detections = scale_detections(detections, input_inv);
+    result.corners = build_corners_from_anchor_detections(global.normals, global.brs[0], frame);
+    result.detections = scaled;
     if (best_frame.has_value()) {
-        result.frame_box = cv::Rect2f(
-            best_frame->x * input_inv, best_frame->y * input_inv,
-            best_frame->width * input_inv, best_frame->height * input_inv);
+        result.frame_box = *best_frame;
         result.has_frame = true;
     }
+    result.source = "yolo+contour-progressive";
     return result;
 }
 
@@ -727,13 +788,22 @@ std::optional<LocalizeResult> YoloLocalizer::Locate(const cv::Mat& frame) {
     const auto t1 = std::chrono::steady_clock::now();
     const double elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-    std::vector<Detection> detections = parse_output(outputs[0], lb, options_.conf_threshold);
+    const float parse_threshold = std::min(options_.conf_threshold, options_.progressive_min_conf_threshold);
+    std::vector<Detection> detections = parse_output(outputs[0], lb, parse_threshold);
     std::optional<LocalizeResult> result = assign_corners(
-        detections, frame, snapped.inv, options_.anchor_expand);
+        detections,
+        frame,
+        snapped.inv,
+        options_.anchor_expand,
+        options_.conf_threshold,
+        options_.progressive_min_conf_threshold,
+        options_.progressive_conf_step);
     if (!result.has_value()) return std::nullopt;
 
     result->inference_ms = elapsed_ms;
-    result->source = "yolo+contour";
+    if (result->source.empty()) {
+        result->source = "yolo";
+    }
     return result;
 }
 
