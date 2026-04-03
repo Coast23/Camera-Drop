@@ -7,13 +7,74 @@
 #include <opencv2/imgproc.hpp>
 
 #include "vision/deskew.hpp"
+#include "vision/pattern_cnn.hpp"
+#include "util/errors.hpp"
 
 namespace camdrop::vision {
+namespace {
+
+struct PackedBits {
+    std::vector<uint8_t> bytes;
+    int tail_bits = 0;
+};
+
+PackedBits pack6_bits(const std::vector<uint8_t>& symbols) {
+    PackedBits packed;
+    packed.bytes.resize((symbols.size() * 6 + 7) / 8);
+    size_t write_idx = 0;
+    uint32_t buffer = 0;
+    int bits = 0;
+    for (uint8_t symbol : symbols) {
+        buffer = (buffer << 6) | (symbol & 0x3FU);
+        bits += 6;
+        while (bits >= 8) {
+            packed.bytes[write_idx++] = static_cast<uint8_t>((buffer >> (bits - 8)) & 0xFFU);
+            bits -= 8;
+        }
+    }
+    if (bits > 0) {
+        packed.bytes[write_idx++] = static_cast<uint8_t>((buffer << (8 - bits)) & 0xFFU);
+    }
+    packed.bytes.resize(write_idx);
+    packed.tail_bits = bits;
+    return packed;
+}
+
+void apply_pattern_cnn_override(RecognizeResult& recognize,
+                                const cv::Mat& deskewed_image,
+                                PatternCnnClassifier& classifier) {
+    if (!recognize.ok || recognize.payload_symbols.empty()) {
+        return;
+    }
+    const std::vector<uint8_t> payload_patterns = classifier.PredictPayloadPatterns(deskewed_image);
+    if (payload_patterns.size() != recognize.payload_symbols.size()) {
+        return;
+    }
+    for (size_t i = 0; i < recognize.payload_symbols.size(); ++i) {
+        recognize.payload_symbols[i] =
+            static_cast<uint8_t>((recognize.payload_symbols[i] & 0x30U) | (payload_patterns[i] & 0x0FU));
+    }
+    const PackedBits payload = pack6_bits(recognize.payload_symbols);
+    recognize.payload_bytes = payload.bytes;
+    recognize.payload_tail_bits = payload.tail_bits;
+}
+
+}  // namespace
 
 FramePipeline::FramePipeline(const FramePipelineConfig& config)
     : config_(config),
       localizer_(config.model_path, config.localizer_options),
-      recognizer_(PatternDictionary::LoadFromDirectory(config.pattern_dir), config.recognizer_options) {}
+      recognizer_(PatternDictionary::LoadFromDirectory(config.pattern_dir), config.recognizer_options) {
+    if (config.pattern_dir.empty()) {
+        throw VisionInitError("Empty pattern directory");
+    }
+    if (!config.pattern_cnn_model_path.empty()) {
+        PatternCnnOptions options;
+        options.ort_threads = std::max(1, config.localizer_options.ort_threads);
+        pattern_cnn_ = std::make_unique<PatternCnnClassifier>(config.pattern_cnn_model_path, options);
+    }
+}
+FramePipeline::~FramePipeline() = default;
 
 namespace {
 
@@ -128,7 +189,8 @@ bool FramePipeline::track_patches(const cv::Mat& frame, CornerQuad* out) {
  * @param frame 输入图像帧
  * @return 处理结果，包含定位、deskew和识别信息
  */
-PipelineResult FramePipeline::Process(const cv::Mat& frame) {
+PipelineResult FramePipeline::Process(const cv::Mat& frame,
+                                      const std::function<bool(const cv::Mat&)>& skip_recognition) {
     PipelineResult result;
     if (frame.empty()) {
         return result;
@@ -161,20 +223,33 @@ PipelineResult FramePipeline::Process(const cv::Mat& frame) {
     }
 
     result.localized = true;
-    result.deskewed_image = Deskewer::Deskew(
-        frame,
-        corners,
-        config_.deskew_width,
-        config_.deskew_height,
-        config_.deskew_expand,
-        config_.deskew_canonical_inset,
-        cv::INTER_NEAREST);
+    
+    try {
+        result.deskewed_image = Deskewer::Deskew(
+            frame,
+            corners,
+            config_.deskew_width,
+            config_.deskew_height,
+            config_.deskew_expand,
+            config_.deskew_canonical_inset,
+            cv::INTER_NEAREST);
+    } catch (const VisionDeskewError& e) {
+        clear_patches();
+        return result;
+    }
+    
     result.deskewed = !result.deskewed_image.empty();
     if (!result.deskewed) {
         return result;
     }
+    if (skip_recognition && skip_recognition(result.deskewed_image)) {
+        return result;
+    }
 
     result.recognize = recognizer_.Decode(result.deskewed_image);
+    if (pattern_cnn_ && result.recognize.ok) {
+        apply_pattern_cnn_override(result.recognize, result.deskewed_image, *pattern_cnn_);
+    }
     result.recognized = result.recognize.ok;
     return result;
 }

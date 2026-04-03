@@ -156,7 +156,7 @@ void print_usage() {
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string pattern_dir = "web/pattern_sets/best_v2";
+    std::string pattern_dir = "pattern_finder/best_v2";
     std::string out_path = "recognizer_debug.png";
     uint32_t seed = 1;
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "util/config.hpp"
+#include "util/errors.hpp"
 
 #include <vector>
 #include <numeric>
@@ -17,10 +18,15 @@ public:
     }
 
     void interleave(uint8_t* data_6bits, size_t size) const {
-        if(size != keymap_.size()){
-            // TODO: Customize an exception here?
-            throw std::invalid_argument("Size mismatch in Interleaver");
+        if(!data_6bits) {
+            throw InterleaverError("Null data pointer in interleave");
         }
+        
+        if(size != keymap_.size()){
+            throw InterleaverSizeError("Input size " + std::to_string(size) + 
+                                       " != expected " + std::to_string(keymap_.size()));
+        }
+        
         std::vector<uint8_t> tmp(data_6bits, data_6bits + size);
         for(size_t i = 0; i < size; ++i){
             data_6bits[keymap_[i]] = tmp[i];
@@ -28,9 +34,13 @@ public:
     }
 
     void deinterleave(uint8_t* data_6bits, size_t size) const {
+        if(!data_6bits) {
+            throw InterleaverError("Null data pointer in deinterleave");
+        }
+        
         if(size != keymap_.size()){
-            // TODO: Customize an exception here?
-            throw std::invalid_argument("Size mismatch in Interleaver");
+            throw InterleaverSizeError("Input size " + std::to_string(size) + 
+                                       " != expected " + std::to_string(keymap_.size()));
         }
 
         std::vector<uint8_t> tmp(data_6bits, data_6bits + size);
@@ -42,6 +52,11 @@ public:
 private:
     Interleaver(){
         size_t size = Config::UINTS_COUNT;
+        
+        if (size == 0) {
+            throw InterleaverError("Config::UINTS_COUNT is 0, call Config::auto_config() first");
+        }
+        
         keymap_.resize(size);
 
         std::iota(keymap_.begin(), keymap_.end(), 0);

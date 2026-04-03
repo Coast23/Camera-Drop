@@ -17,8 +17,8 @@ select_patterns.py  —  为 camera-drop 码筛选最优 8×8 pattern 组合
   4. GNU Unifont (.hex.gz)：57,000+ 字符，切成 8×8 patch
 
 用法：
-  python scripts/select_patterns.py --n 16 --save
-  python scripts/select_patterns.py --n 16 --save --workers 8 --prefilter 500 --trials 200
+  python pattern_finder/select_patterns.py --n 16 --save
+  python pattern_finder/select_patterns.py --n 16 --save --workers 8 --prefilter 500 --trials 200
 """
 
 import cv2
@@ -1444,7 +1444,7 @@ def load_seed_patterns(seed_dir, prefix="seedbest"):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n",          type=int, default=16)
-    ap.add_argument("--out",        default="scripts/patterns")
+    ap.add_argument("--out",        default="test/scripts/patterns")
     ap.add_argument("--save",       action="store_true")
     ap.add_argument("--workers",    type=int, default=None,  help="进程数，默认 CPU 核心数-1")
     ap.add_argument("--max-font",   type=int, default=200,   help="每种字体最多取多少候选")

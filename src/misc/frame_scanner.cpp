@@ -35,10 +35,39 @@ void print_usage() {
         << "Usage: frame_scanner <image>"
         << " [--model <onnx>]"
         << " [--patterns <dir>]"
+        << " [--pattern-cnn-model <onnx>]"
         << " [--deskew-out <png>]\n";
 }
 
 }  // namespace
+
+fs::path find_resource(const char* argv0, const char* relative_path) {
+    fs::path exe_dir = fs::absolute(fs::path(argv0)).parent_path();
+    fs::path local = exe_dir / relative_path;
+    if (fs::exists(local)) return local;
+    const char* source_dir = std::getenv("CAMDROP_SOURCE_DIR");
+    if (source_dir) {
+        fs::path dev = fs::path(source_dir) / relative_path;
+        if (fs::exists(dev)) return dev;
+    }
+    return {};
+}
+
+fs::path default_model_path(const char* argv0) {
+    auto p = find_resource(argv0, "web/model/best_dynamic.onnx");
+    if (!p.empty()) return p;
+    return "web/model/best_dynamic.onnx";
+}
+
+fs::path default_pattern_dir(const char* argv0) {
+    auto p = find_resource(argv0, "pattern_finder/best_v2");
+    if (!p.empty()) return p;
+    return "pattern_finder/best_v2";
+}
+
+fs::path default_pattern_cnn_model_path(const char* argv0) {
+    return find_resource(argv0, "cnn/models/pattern_cnn_se110.onnx");
+}
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -47,8 +76,9 @@ int main(int argc, char** argv) {
     }
 
     std::string image_path;
-    std::string model_path = "web/model/best_dynamic.onnx";
-    std::string pattern_dir = "web/pattern_sets/best_v2";
+    std::string model_path = default_model_path(argv[0]).string();
+    std::string pattern_dir = default_pattern_dir(argv[0]).string();
+    std::string pattern_cnn_model_path = default_pattern_cnn_model_path(argv[0]).string();
     std::string deskew_out;
 
     for (int i = 1; i < argc; ++i) {
@@ -57,6 +87,8 @@ int main(int argc, char** argv) {
             model_path = argv[++i];
         } else if (arg == "--patterns" && i + 1 < argc) {
             pattern_dir = argv[++i];
+        } else if (arg == "--pattern-cnn-model" && i + 1 < argc) {
+            pattern_cnn_model_path = argv[++i];
         } else if (arg == "--deskew-out" && i + 1 < argc) {
             deskew_out = argv[++i];
         } else if (!arg.empty() && arg[0] != '-' && image_path.empty()) {
@@ -70,6 +102,13 @@ int main(int argc, char** argv) {
     if (image_path.empty()) {
         print_usage();
         return 1;
+    }
+
+    if (model_path == "web/model/best_dynamic.onnx") {
+        model_path = default_model_path(argv[0]).string();
+    }
+    if (pattern_dir == "pattern_finder/best_v2") {
+        pattern_dir = default_pattern_dir(argv[0]).string();
     }
 
     if (deskew_out.empty()) {
@@ -86,6 +125,7 @@ int main(int argc, char** argv) {
         camdrop::vision::FramePipelineConfig cfg;
         cfg.model_path = model_path;
         cfg.pattern_dir = pattern_dir;
+        cfg.pattern_cnn_model_path = pattern_cnn_model_path;
 
         camdrop::vision::FramePipeline pipeline(cfg);
         const camdrop::vision::PipelineResult result = pipeline.Process(frame);

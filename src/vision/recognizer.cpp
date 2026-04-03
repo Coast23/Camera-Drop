@@ -30,8 +30,23 @@ static constexpr int MARGIN = Config::MARGIN;
 static constexpr int IMG_W = Config::IMG_WIDTH;
 static constexpr int IMG_H = Config::IMG_HEIGHT;
 static constexpr int TILE_SIZE = Config::TILE_SIZE;
-static constexpr int CELL_SAMPLE_SIZE = TILE_SIZE + 2;
+static constexpr int CELL_SAMPLE_PAD = 2;
+static constexpr int CELL_SAMPLE_SIZE = TILE_SIZE + CELL_SAMPLE_PAD * 2;
 static constexpr int SAMPLE_AREA = CELL_SAMPLE_SIZE * CELL_SAMPLE_SIZE;
+static constexpr int SUBWINDOW_SPAN = CELL_SAMPLE_SIZE - TILE_SIZE + 1;
+static constexpr int SUBWINDOW_COUNT = SUBWINDOW_SPAN * SUBWINDOW_SPAN;
+static constexpr int CENTER_SUBWINDOW_IDX = CELL_SAMPLE_PAD * SUBWINDOW_SPAN + CELL_SAMPLE_PAD;
+static constexpr int EXPANDED_SAMPLE_PAD = 3;
+static constexpr int EXPANDED_SAMPLE_SIZE = TILE_SIZE + EXPANDED_SAMPLE_PAD * 2;
+static constexpr int EXPANDED_SAMPLE_AREA = EXPANDED_SAMPLE_SIZE * EXPANDED_SAMPLE_SIZE;
+static constexpr int EXPANDED_SUBWINDOW_SPAN = EXPANDED_SAMPLE_SIZE - TILE_SIZE + 1;
+static constexpr int EXPANDED_SUBWINDOW_COUNT = EXPANDED_SUBWINDOW_SPAN * EXPANDED_SUBWINDOW_SPAN;
+static constexpr int EXPANDED_CENTER_SUBWINDOW_IDX =
+    EXPANDED_SAMPLE_PAD * EXPANDED_SUBWINDOW_SPAN + EXPANDED_SAMPLE_PAD;
+static constexpr int WINDOW_EXPAND_DIST64 = 4;
+static constexpr int WINDOW_EXPAND_DIST16 = 0;
+static constexpr bool ENABLE_EXPANDED_WINDOW_FALLBACK = false;
+static constexpr bool ENABLE_EXPANDED_OFFSET_SEARCH = false;
 static constexpr int NUM_COLORS = 4;
 static constexpr int ANCHOR_OUT_START = Config::ANCHOR_OUT_START;
 static constexpr int ANCHOR_L1_SIZE = Config::ANCHOR_L1_SIZE;
@@ -45,7 +60,6 @@ static constexpr int DRIFT_MAX = 7;
 static constexpr uint8_t COOL_INIT = 0xFE;
 static constexpr uint8_t COOL_NONE = 0xFF;
 static constexpr uint16_t PRIO_INIT = 0xFFFE;
-static constexpr int HASH_FAST_N = 5;
 static constexpr int HEAP_IDX_BITS = 14;
 static constexpr int HEAP_IDX_MASK = (1 << HEAP_IDX_BITS) - 1;
 static constexpr double BEST_COLOR_FLOOR = 48.0;
@@ -101,6 +115,12 @@ struct PatternDict {
     std::vector<uint32_t> lo;
     std::vector<uint32_t> hi;
     std::vector<uint16_t> masks16;
+    std::vector<std::array<uint8_t, 8>> row_sum;
+    std::vector<std::array<uint8_t, 8>> col_sum;
+    std::vector<std::array<uint8_t, 8>> row_trans;
+    std::vector<std::array<uint8_t, 8>> col_trans;
+    std::vector<std::array<uint8_t, 16>> block_fill16;
+    std::vector<uint8_t> active_pixels;
 };
 
 struct EncodedFrame {
@@ -132,6 +152,7 @@ struct DecodeBuffers {
     std::vector<uint8_t> bin_frame;
     std::vector<uint32_t> sat_frame;
     std::array<uint8_t, SAMPLE_AREA> cell10 {};
+    std::array<uint8_t, EXPANDED_SAMPLE_AREA> cell14 {};
     std::array<uint16_t, 16> block16 {};
 };
 
@@ -158,6 +179,7 @@ struct CandidateHit {
     int best_pat = 0;
     int best_dist16 = 17;
     int best_dist64 = 65;
+    int best_tm_score = std::numeric_limits<int>::max();
     int best_dx = 0;
     int best_dy = 0;
     int best_sample_x = 0;
@@ -220,16 +242,72 @@ static const std::array<std::array<int, 2>, 9> DRIFT_PAIRS = {{
     {{-1, 1}},  {{0, 1}},  {{1, 1}},
 }};
 
-static const std::array<int, 9> HASH_ORDER = {{4, 5, 7, 3, 1, 8, 0, 2, 6}};
-static const std::array<std::array<uint8_t, 64>, 9> SUBWINDOW_MAP = []() {
-    std::array<std::array<uint8_t, 64>, 9> out {};
-    for (int idx = 0; idx < 9; ++idx) {
-        const int ox = idx % 3;
-        const int oy = idx / 3;
+static const std::array<int, SUBWINDOW_COUNT> HASH_ORDER = {{
+    12,
+    13, 17, 11, 7,
+    18, 6, 8, 16,
+    14, 22, 10, 2,
+    19, 23, 21, 15, 5, 1, 3, 9,
+    24, 4, 20, 0,
+}};
+
+static std::vector<int> build_expanded_ring_order() {
+    struct RankedIdx {
+        int manhattan = 0;
+        int chebyshev = 0;
+        int diagonal = 0;
+        int idx = 0;
+    };
+    std::vector<RankedIdx> ranked;
+    ranked.reserve(EXPANDED_SUBWINDOW_COUNT);
+    for (int dy = -EXPANDED_SAMPLE_PAD; dy <= EXPANDED_SAMPLE_PAD; ++dy) {
+        for (int dx = -EXPANDED_SAMPLE_PAD; dx <= EXPANDED_SAMPLE_PAD; ++dx) {
+            const int chebyshev = std::max(std::abs(dx), std::abs(dy));
+            if (chebyshev != EXPANDED_SAMPLE_PAD) continue;
+            ranked.push_back({
+                std::abs(dx) + std::abs(dy),
+                chebyshev,
+                (dx != 0 && dy != 0) ? 1 : 0,
+                (dy + EXPANDED_SAMPLE_PAD) * EXPANDED_SUBWINDOW_SPAN + (dx + EXPANDED_SAMPLE_PAD),
+            });
+        }
+    }
+    std::sort(ranked.begin(), ranked.end(), [](const RankedIdx& a, const RankedIdx& b) {
+        if (a.manhattan != b.manhattan) return a.manhattan < b.manhattan;
+        if (a.chebyshev != b.chebyshev) return a.chebyshev < b.chebyshev;
+        if (a.diagonal != b.diagonal) return a.diagonal < b.diagonal;
+        return a.idx < b.idx;
+    });
+    std::vector<int> out;
+    out.reserve(ranked.size());
+    for (const RankedIdx& item : ranked) out.push_back(item.idx);
+    return out;
+}
+
+static const std::vector<int> EXPANDED_HASH_ORDER = build_expanded_ring_order();
+static const std::array<std::array<uint8_t, 64>, SUBWINDOW_COUNT> SUBWINDOW_MAP = []() {
+    std::array<std::array<uint8_t, 64>, SUBWINDOW_COUNT> out {};
+    for (int idx = 0; idx < SUBWINDOW_COUNT; ++idx) {
+        const int ox = idx % SUBWINDOW_SPAN;
+        const int oy = idx / SUBWINDOW_SPAN;
         int k = 0;
         for (int r = 0; r < TILE_SIZE; ++r) {
             for (int c = 0; c < TILE_SIZE; ++c) {
                 out[idx][k++] = static_cast<uint8_t>((oy + r) * CELL_SAMPLE_SIZE + (ox + c));
+            }
+        }
+    }
+    return out;
+}();
+static const std::array<std::array<uint8_t, 64>, EXPANDED_SUBWINDOW_COUNT> EXPANDED_SUBWINDOW_MAP = []() {
+    std::array<std::array<uint8_t, 64>, EXPANDED_SUBWINDOW_COUNT> out {};
+    for (int idx = 0; idx < EXPANDED_SUBWINDOW_COUNT; ++idx) {
+        const int ox = idx % EXPANDED_SUBWINDOW_SPAN;
+        const int oy = idx / EXPANDED_SUBWINDOW_SPAN;
+        int k = 0;
+        for (int r = 0; r < TILE_SIZE; ++r) {
+            for (int c = 0; c < TILE_SIZE; ++c) {
+                out[idx][k++] = static_cast<uint8_t>((oy + r) * EXPANDED_SAMPLE_SIZE + (ox + c));
             }
         }
     }
@@ -359,6 +437,81 @@ static inline bool mask_is_on(uint32_t mask_lo, uint32_t mask_hi, int bit) {
     return ((mask_hi >> (bit - 32)) & 1U) != 0;
 }
 
+static std::array<uint8_t, 8> compute_row_sum(uint32_t mask_lo, uint32_t mask_hi) {
+    std::array<uint8_t, 8> out {};
+    for (int r = 0; r < 8; ++r) {
+        uint8_t sum = 0;
+        const int base = r * 8;
+        for (int c = 0; c < 8; ++c) {
+            sum = static_cast<uint8_t>(sum + (mask_is_on(mask_lo, mask_hi, base + c) ? 1 : 0));
+        }
+        out[r] = sum;
+    }
+    return out;
+}
+
+static std::array<uint8_t, 8> compute_col_sum(uint32_t mask_lo, uint32_t mask_hi) {
+    std::array<uint8_t, 8> out {};
+    for (int c = 0; c < 8; ++c) {
+        uint8_t sum = 0;
+        for (int r = 0; r < 8; ++r) {
+            sum = static_cast<uint8_t>(sum + (mask_is_on(mask_lo, mask_hi, r * 8 + c) ? 1 : 0));
+        }
+        out[c] = sum;
+    }
+    return out;
+}
+
+static std::array<uint8_t, 8> compute_row_trans(uint32_t mask_lo, uint32_t mask_hi) {
+    std::array<uint8_t, 8> out {};
+    for (int r = 0; r < 8; ++r) {
+        uint8_t transitions = 0;
+        bool prev = mask_is_on(mask_lo, mask_hi, r * 8);
+        for (int c = 1; c < 8; ++c) {
+            const bool cur = mask_is_on(mask_lo, mask_hi, r * 8 + c);
+            transitions = static_cast<uint8_t>(transitions + (cur != prev ? 1 : 0));
+            prev = cur;
+        }
+        out[r] = transitions;
+    }
+    return out;
+}
+
+static std::array<uint8_t, 8> compute_col_trans(uint32_t mask_lo, uint32_t mask_hi) {
+    std::array<uint8_t, 8> out {};
+    for (int c = 0; c < 8; ++c) {
+        uint8_t transitions = 0;
+        bool prev = mask_is_on(mask_lo, mask_hi, c);
+        for (int r = 1; r < 8; ++r) {
+            const bool cur = mask_is_on(mask_lo, mask_hi, r * 8 + c);
+            transitions = static_cast<uint8_t>(transitions + (cur != prev ? 1 : 0));
+            prev = cur;
+        }
+        out[c] = transitions;
+    }
+    return out;
+}
+
+static std::array<uint8_t, 16> compute_block_fill16(uint32_t mask_lo, uint32_t mask_hi) {
+    std::array<uint8_t, 16> out {};
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            const int base = (r << 4) + (c << 1);
+            uint8_t on = 0;
+            on = static_cast<uint8_t>(on + (mask_is_on(mask_lo, mask_hi, base) ? 1 : 0));
+            on = static_cast<uint8_t>(on + (mask_is_on(mask_lo, mask_hi, base + 1) ? 1 : 0));
+            on = static_cast<uint8_t>(on + (mask_is_on(mask_lo, mask_hi, base + 8) ? 1 : 0));
+            on = static_cast<uint8_t>(on + (mask_is_on(mask_lo, mask_hi, base + 9) ? 1 : 0));
+            out[r * 4 + c] = on;
+        }
+    }
+    return out;
+}
+
+static uint8_t count_active_pixels(uint32_t mask_lo, uint32_t mask_hi) {
+    return static_cast<uint8_t>(popcount32(mask_lo) + popcount32(mask_hi));
+}
+
 /**
  * @brief 将64位掩码分割为两个32位部分
  * @param mask 64位掩码
@@ -404,11 +557,23 @@ static PatternDict build_pattern_dict(const std::vector<uint64_t>& masks64) {
     dict.lo.resize(masks64.size());
     dict.hi.resize(masks64.size());
     dict.masks16.resize(masks64.size());
+    dict.row_sum.resize(masks64.size());
+    dict.col_sum.resize(masks64.size());
+    dict.row_trans.resize(masks64.size());
+    dict.col_trans.resize(masks64.size());
+    dict.block_fill16.resize(masks64.size());
+    dict.active_pixels.resize(masks64.size());
     for (size_t i = 0; i < masks64.size(); ++i) {
         const auto parts = split_mask64(masks64[i]);
         dict.lo[i] = parts.first;
         dict.hi[i] = parts.second;
         dict.masks16[i] = compress_mask64_to_16(parts.first, parts.second);
+        dict.row_sum[i] = compute_row_sum(parts.first, parts.second);
+        dict.col_sum[i] = compute_col_sum(parts.first, parts.second);
+        dict.row_trans[i] = compute_row_trans(parts.first, parts.second);
+        dict.col_trans[i] = compute_col_trans(parts.first, parts.second);
+        dict.block_fill16[i] = compute_block_fill16(parts.first, parts.second);
+        dict.active_pixels[i] = count_active_pixels(parts.first, parts.second);
     }
     return dict;
 }
@@ -1096,8 +1261,8 @@ static CellSample10 sample_cell10(const std::vector<uint8_t>& signal_frame,
                                   int x0,
                                   int y0,
                                   std::array<uint8_t, SAMPLE_AREA>& cell10) {
-    const int sx = clamp_int(x0 - 1, 0, IMG_W - CELL_SAMPLE_SIZE);
-    const int sy = clamp_int(y0 - 1, 0, IMG_H - CELL_SAMPLE_SIZE);
+    const int sx = clamp_int(x0 - CELL_SAMPLE_PAD, 0, IMG_W - CELL_SAMPLE_SIZE);
+    const int sy = clamp_int(y0 - CELL_SAMPLE_PAD, 0, IMG_H - CELL_SAMPLE_SIZE);
     int sum = 0;
     int k = 0;
     for (int r = 0; r < CELL_SAMPLE_SIZE; ++r) {
@@ -1105,6 +1270,25 @@ static CellSample10 sample_cell10(const std::vector<uint8_t>& signal_frame,
         for (int c = 0; c < CELL_SAMPLE_SIZE; ++c) {
             const uint8_t v = signal_frame[row + c];
             cell10[k++] = v;
+            sum += static_cast<int>(v);
+        }
+    }
+    return {sx, sy, sum};
+}
+
+static CellSample10 sample_cell14(const std::vector<uint8_t>& signal_frame,
+                                  int x0,
+                                  int y0,
+                                  std::array<uint8_t, EXPANDED_SAMPLE_AREA>& cell14) {
+    const int sx = clamp_int(x0 - EXPANDED_SAMPLE_PAD, 0, IMG_W - EXPANDED_SAMPLE_SIZE);
+    const int sy = clamp_int(y0 - EXPANDED_SAMPLE_PAD, 0, IMG_H - EXPANDED_SAMPLE_SIZE);
+    int sum = 0;
+    int k = 0;
+    for (int r = 0; r < EXPANDED_SAMPLE_SIZE; ++r) {
+        const int row = (sy + r) * IMG_W + sx;
+        for (int c = 0; c < EXPANDED_SAMPLE_SIZE; ++c) {
+            const uint8_t v = signal_frame[row + c];
+            cell14[k++] = v;
             sum += static_cast<int>(v);
         }
     }
@@ -1138,6 +1322,25 @@ static HashSample10 hash_subwindow10(const std::array<uint8_t, SAMPLE_AREA>& cel
     return {mask_lo, mask_hi, hash_block16(block16)};
 }
 
+static HashSample10 hash_subwindow14(const std::array<uint8_t, EXPANDED_SAMPLE_AREA>& cell14,
+                                     int drift_idx,
+                                     std::array<uint16_t, 16>& block16,
+                                     double threshold) {
+    const auto& map = EXPANDED_SUBWINDOW_MAP[drift_idx];
+    block16.fill(0);
+    uint32_t mask_lo = 0;
+    uint32_t mask_hi = 0;
+    for (int i = 0; i < 64; ++i) {
+        const uint8_t v = cell14[map[i]];
+        if (static_cast<double>(v) > threshold) {
+            if (i < 32) mask_lo |= (1U << i);
+            else mask_hi |= (1U << (i - 32));
+        }
+        block16[BLOCK16_MAP[i]] = static_cast<uint16_t>(block16[BLOCK16_MAP[i]] + v);
+    }
+    return {mask_lo, mask_hi, hash_block16(block16)};
+}
+
 static uint16_t hash_block16(const std::array<uint16_t, 16>& block16) {
     int sum = 0;
     for (int i = 0; i < 16; ++i) sum += block16[i];
@@ -1149,23 +1352,49 @@ static uint16_t hash_block16(const std::array<uint16_t, 16>& block16) {
     return mask;
 }
 
-static inline std::tuple<int, int, int> match_pattern_combined(uint16_t mask16,
-                                                               uint32_t mask_lo,
-                                                               uint32_t mask_hi,
-                                                               const PatternDict& dict) {
+static int mass_profile_dist(const std::array<uint16_t, 16>& block16,
+                             const std::array<uint8_t, 16>& block_fill16,
+                             uint8_t active_pixels) {
+    if (active_pixels == 0) {
+        return std::numeric_limits<int>::max() / 4;
+    }
+    int sample_total = 0;
+    for (int i = 0; i < 16; ++i) sample_total += static_cast<int>(block16[i]);
+    if (sample_total <= 0) {
+        return std::numeric_limits<int>::max() / 4;
+    }
+    int score = 0;
+    for (int i = 0; i < 16; ++i) {
+        const int lhs = static_cast<int>(block16[i]) * static_cast<int>(active_pixels);
+        const int rhs = static_cast<int>(block_fill16[i]) * sample_total;
+        score += std::abs(lhs - rhs);
+    }
+    return score;
+}
+
+static inline std::tuple<int, int, int, int> match_pattern_combined(const std::array<uint16_t, 16>& block16,
+                                                                    uint16_t mask16,
+                                                                    uint32_t mask_lo,
+                                                                    uint32_t mask_hi,
+                                                                    const PatternDict& dict) {
     int best_pat = 0;
     int best_dist64 = 65;
     int best_dist16 = 17;
+    int best_mass = std::numeric_limits<int>::max();
     for (int i = 0; i < static_cast<int>(dict.masks64.size()); ++i) {
         const int d64 = popcount32(mask_lo ^ dict.lo[i]) + popcount32(mask_hi ^ dict.hi[i]);
         const int d16 = popcount32(static_cast<uint32_t>(mask16 ^ dict.masks16[i]));
-        if (d64 < best_dist64 || (d64 == best_dist64 && d16 < best_dist16)) {
+        const int mass = mass_profile_dist(block16, dict.block_fill16[i], dict.active_pixels[i]);
+        if (d64 < best_dist64
+            || (d64 == best_dist64 && d16 < best_dist16)
+            || (d64 == best_dist64 && d16 == best_dist16 && mass < best_mass)) {
             best_pat = i;
             best_dist64 = d64;
             best_dist16 = d16;
+            best_mass = mass;
         }
     }
-    return {best_pat, best_dist64, best_dist16};
+    return {best_pat, best_dist64, best_dist16, 0};
 }
 
 static inline uint8_t drift_index_from_offset(int dx, int dy) {
@@ -1182,14 +1411,17 @@ static uint8_t calc_cooldown(uint8_t previous, uint8_t idx) {
 }
 
 static std::vector<int> choose_search_drift_indices(uint8_t cooldown) {
-    const int count = (cooldown == COOL_INIT) ? static_cast<int>(HASH_ORDER.size()) : HASH_FAST_N;
+    const int count = (cooldown == COOL_INIT) ? static_cast<int>(HASH_ORDER.size()) : static_cast<int>(HASH_ORDER.size());
     std::vector<int> out;
     out.reserve(count);
     for (int i = 0; i < count; ++i) {
-        const int drift_idx = HASH_ORDER[i];
-        out.push_back(drift_idx);
+        out.push_back(HASH_ORDER[i]);
     }
     return out;
+}
+
+static const std::vector<int>& choose_expand_drift_indices() {
+    return EXPANDED_HASH_ORDER;
 }
 
 static bool should_prefer_bitgrid_candidate(const CandidateHit& primary,
@@ -1309,6 +1541,7 @@ static DecodedCell decode_cell_adaptive(const cv::Mat& img,
                                         int y0,
                                         uint8_t cooldown,
                                         std::array<uint8_t, SAMPLE_AREA>& cell10,
+                                        std::array<uint8_t, EXPANDED_SAMPLE_AREA>& cell14,
                                         std::array<uint16_t, 16>& block16,
                                         const PatternDict& dict,
                                         const ColorCalibration& calib,
@@ -1320,53 +1553,103 @@ static DecodedCell decode_cell_adaptive(const cv::Mat& img,
         best.best_sample_x = clamp_int(x0, 0, IMG_W - TILE_SIZE);
         best.best_sample_y = clamp_int(y0, 0, IMG_H - TILE_SIZE);
 
-        auto consider = [&](const CellSample10& sample, int drift_idx, const std::tuple<int, int, int>& hit) {
-            const int ox = drift_idx % 3;
-            const int oy = drift_idx / 3;
-            const int sample_x = sample.sx + ox;
-            const int sample_y = sample.sy + oy;
+        auto consider = [&](CandidateHit& target, int sample_x, int sample_y, const std::tuple<int, int, int, int>& hit) {
             const int dx = sample_x - x0;
             const int dy = sample_y - y0;
             const int pat = std::get<0>(hit);
             const int dist64 = std::get<1>(hit);
             const int dist16 = std::get<2>(hit);
+            const int tm = std::get<3>(hit);
             const int radius = std::abs(dx) + std::abs(dy);
-            if (dist64 < best.best_dist64
-                || (dist64 == best.best_dist64 && dist16 < best.best_dist16)
-                || (dist64 == best.best_dist64 && dist16 == best.best_dist16 && radius < best.best_radius)) {
-                best.best_pat = pat;
-                best.best_dist64 = dist64;
-                best.best_dist16 = dist16;
-                best.best_dx = dx;
-                best.best_dy = dy;
-                best.best_sample_x = sample_x;
-                best.best_sample_y = sample_y;
-                best.best_radius = radius;
+            if (dist64 < target.best_dist64
+                || (dist64 == target.best_dist64 && dist16 < target.best_dist16)
+                || (dist64 == target.best_dist64 && dist16 == target.best_dist16 && tm < target.best_tm_score)
+                || (dist64 == target.best_dist64 && dist16 == target.best_dist16 && tm == target.best_tm_score && radius < target.best_radius)) {
+                target.best_pat = pat;
+                target.best_dist64 = dist64;
+                target.best_dist16 = dist16;
+                target.best_tm_score = tm;
+                target.best_dx = dx;
+                target.best_dy = dy;
+                target.best_sample_x = sample_x;
+                target.best_sample_y = sample_y;
+                target.best_radius = radius;
             }
         };
 
-        auto evaluate_sample = [&](const CellSample10& sample, const std::vector<int>& drift_indices) -> bool {
+        auto evaluate_sample12 = [&](CandidateHit& target,
+                                     const CellSample10& sample,
+                                     const std::vector<int>& drift_indices) -> bool {
             const double threshold = static_cast<double>(sample.sum) / static_cast<double>(SAMPLE_AREA);
             for (int drift_idx : drift_indices) {
+                const int ox = drift_idx % SUBWINDOW_SPAN;
+                const int oy = drift_idx / SUBWINDOW_SPAN;
                 const HashSample10 hashes = hash_subwindow10(cell10, drift_idx, block16, threshold);
-                const auto hit = match_pattern_combined(hashes.mask16, hashes.mask_lo, hashes.mask_hi, dict);
-                consider(sample, drift_idx, hit);
-                if (best.best_dist64 <= 2 && best.best_dist16 == 0 && drift_idx == 4) {
+                const auto hit = match_pattern_combined(
+                    block16,
+                    hashes.mask16,
+                    hashes.mask_lo,
+                    hashes.mask_hi,
+                    dict);
+                consider(target, sample.sx + ox, sample.sy + oy, hit);
+                if (target.best_dist64 <= 2 && target.best_dist16 == 0 && drift_idx == CENTER_SUBWINDOW_IDX) {
                     return true;
                 }
             }
             return false;
         };
 
-        CellSample10 sample = sample_cell10(signal_frame, x0, y0, cell10);
-        evaluate_sample(sample, search_drift_indices);
+        auto evaluate_sample14 = [&](CandidateHit& target,
+                                     const CellSample10& sample,
+                                     const std::vector<int>& drift_indices) -> bool {
+            const double threshold = static_cast<double>(sample.sum) / static_cast<double>(EXPANDED_SAMPLE_AREA);
+            for (int drift_idx : drift_indices) {
+                const int ox = drift_idx % EXPANDED_SUBWINDOW_SPAN;
+                const int oy = drift_idx / EXPANDED_SUBWINDOW_SPAN;
+                const HashSample10 hashes = hash_subwindow14(cell14, drift_idx, block16, threshold);
+                const auto hit = match_pattern_combined(
+                    block16,
+                    hashes.mask16,
+                    hashes.mask_lo,
+                    hashes.mask_hi,
+                    dict);
+                consider(target, sample.sx + ox, sample.sy + oy, hit);
+                if (target.best_dist64 <= 2 && target.best_dist16 == 0 && drift_idx == EXPANDED_CENTER_SUBWINDOW_IDX) {
+                    return true;
+                }
+            }
+            return false;
+        };
 
-        if (best.best_dist64 > 8 || best.best_dist16 > 1) {
-            static const std::vector<int> center_only = {4};
+        auto should_accept_expanded = [](const CandidateHit& base, const CandidateHit& expanded) {
+            if (expanded.best_dist64 + 2 <= base.best_dist64) return true;
+            if (expanded.best_dist64 + 1 <= base.best_dist64 && expanded.best_dist16 < base.best_dist16) return true;
+            if (expanded.best_dist64 == base.best_dist64 && expanded.best_dist16 + 2 <= base.best_dist16) return true;
+            return false;
+        };
+
+        CellSample10 sample = sample_cell10(signal_frame, x0, y0, cell10);
+        evaluate_sample12(best, sample, search_drift_indices);
+
+        if (ENABLE_EXPANDED_WINDOW_FALLBACK
+            && (best.best_dist64 > WINDOW_EXPAND_DIST64 || best.best_dist16 > WINDOW_EXPAND_DIST16)) {
+            const CandidateHit base_best = best;
+            const CellSample10 sample14 = sample_cell14(signal_frame, x0, y0, cell14);
+            CandidateHit expanded_best = base_best;
+            evaluate_sample14(expanded_best, sample14, choose_expand_drift_indices());
+            if (should_accept_expanded(base_best, expanded_best)) {
+                best = expanded_best;
+            }
+        }
+
+        if (ENABLE_EXPANDED_WINDOW_FALLBACK
+            && ENABLE_EXPANDED_OFFSET_SEARCH
+            && (best.best_dist64 > 8 || best.best_dist16 > 1)) {
+            static const std::vector<int> center_only = {EXPANDED_CENTER_SUBWINDOW_IDX};
             for (const auto& off : SEARCH_EXTENDED) {
                 if (std::abs(off[0]) <= 1 && std::abs(off[1]) <= 1) continue;
-                sample = sample_cell10(signal_frame, x0 + off[0], y0 + off[1], cell10);
-                evaluate_sample(sample, center_only);
+                const CellSample10 sample14 = sample_cell14(signal_frame, x0 + off[0], y0 + off[1], cell14);
+                evaluate_sample14(best, sample14, center_only);
                 if (best.best_dist64 <= 2 && best.best_dist16 == 0) {
                     break;
                 }
@@ -1600,6 +1883,7 @@ static void decode_by_priority(const cv::Mat& img,
             layout.y[idx] + buffers.drift_y[idx],
             prev_cooldown,
             buffers.cell10,
+            buffers.cell14,
             buffers.block16,
             dict,
             calib,
@@ -1631,6 +1915,7 @@ static void decode_by_priority(const cv::Mat& img,
                 layout.y[idx],
                 COOL_INIT,
                 buffers.cell10,
+                buffers.cell14,
                 buffers.block16,
                 dict,
                 calib,

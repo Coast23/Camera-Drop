@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+﻿cmake_minimum_required(VERSION 3.16)
 
 if(POLICY CMP0144)
     cmake_policy(SET CMP0144 NEW)
@@ -16,6 +16,8 @@ option(CAMDROP_BUILD_ORT_PIPELINE "Build ONNX Runtime YOLO pipeline tools" ON)
 option(CAMDROP_BUILD_MISC_TOOLS "Build misc command line tools" ON)
 
 set(ONNXRUNTIME_ROOT "" CACHE PATH "Root directory of an ONNX Runtime installation")
+set(CAMDROP_FFMPEG_EXE "" CACHE FILEPATH "Optional ffmpeg executable to copy next to built tools")
+set(CAMDROP_RESOURCE_DIR "" CACHE PATH "Root directory containing web/model/ and cnn/models/. Defaults to CMAKE_SOURCE_DIR.")
 
 file(GLOB_RECURSE CORE_SRC_FILES CONFIGURE_DEPENDS
     "src/codec/*.cpp"
@@ -32,14 +34,18 @@ set(VISION_COMMON_SRC
 
 set(VISION_ORT_SRC
     src/vision/frame_pipeline.cpp
+    src/vision/pattern_cnn.cpp
     src/vision/yolo_localizer.cpp
+)
+
+set(CAMDROP_RECT_LAYOUT_DEFS
+    CAMDROP_CFG_MARGIN=9
+    CAMDROP_CFG_SHORT_EDGE_PATTERNS=150
 )
 
 add_subdirectory(third_party/wirehair)
 add_subdirectory(third_party/zstd/build/cmake zstd_build)
 
-# correct 库在 Debug 模式下强行注入了 -fsanitize=address。
-# Windows 下的 MinGW 通常没有对应的 libasan，单独降级 correct 的构建类型。
 if(MINGW)
     set(_camdrop_saved_build_type "${CMAKE_BUILD_TYPE}")
     set(CMAKE_BUILD_TYPE "Release")
@@ -69,16 +75,7 @@ endif()
 set(CAMDROP_OPENCV_EXTRA_LIBS "")
 if(_opencv_via_pkgconfig)
     list(APPEND CAMDROP_OPENCV_EXTRA_LIBS
-        jpeg
-        png
-        tiff
-        webp
-        webpdecoder
-        webpdemux
-        webpmux
-        sharpyuv
-        zlib
-        lzma
+        jpeg png tiff webp webpdecoder webpdemux webpmux sharpyuv zlib lzma
     )
 endif()
 
@@ -148,11 +145,9 @@ function(camdrop_configure_target target_name)
             ${CMAKE_CURRENT_SOURCE_DIR}/third_party/correct/include
             ${OpenCV_INCLUDE_DIRS}
     )
-
     if(OpenCV_LIBRARY_DIRS)
         target_link_directories(${target_name} PUBLIC ${OpenCV_LIBRARY_DIRS})
     endif()
-
     if(MSVC)
         target_compile_options(${target_name} PRIVATE /W3 /permissive-)
     else()
@@ -172,7 +167,6 @@ endfunction()
 
 function(camdrop_copy_opencv_dll target_name)
     if(WIN32 AND NOT MINGW)
-        # CMake 3.21+ 支持 TARGET_RUNTIME_DLLS，自动收集所有运行时 DLL
         if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.21")
             add_custom_command(TARGET ${target_name} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -184,6 +178,44 @@ function(camdrop_copy_opencv_dll target_name)
     endif()
 endfunction()
 
+function(camdrop_copy_ffmpeg_binary target_name)
+    if(WIN32 AND CAMDROP_FFMPEG_EXE)
+        if(EXISTS "${CAMDROP_FFMPEG_EXE}")
+            add_custom_command(TARGET ${target_name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CAMDROP_FFMPEG_EXE}"
+                    "$<TARGET_FILE_DIR:${target_name}>/ffmpeg.exe"
+            )
+        else()
+            message(WARNING "CAMDROP_FFMPEG_EXE does not exist: ${CAMDROP_FFMPEG_EXE}")
+        endif()
+    endif()
+endfunction()
+
+# camdrop_copy_resource_dir(target): copies model subdirectories from CAMDROP_RESOURCE_DIR
+# (web/model and cnn/models) into the binary output dir, preserving relative paths.
+# Usage: camdrop_copy_resource_dir(my_target)
+function(camdrop_copy_resource_dir target_name)
+    if(NOT CAMDROP_RESOURCE_DIR)
+        return()
+    endif()
+    if(NOT EXISTS "${CAMDROP_RESOURCE_DIR}")
+        message(WARNING "CAMDROP_RESOURCE_DIR does not exist: ${CAMDROP_RESOURCE_DIR}")
+        return()
+    endif()
+    foreach(_subdir web/model cnn/models pattern_finder/best_v2)
+        set(_src "${CAMDROP_RESOURCE_DIR}/${_subdir}")
+        if(EXISTS "${_src}")
+            add_custom_command(TARGET ${target_name} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+                    "${_src}"
+                    "$<TARGET_FILE_DIR:${target_name}>/${_subdir}"
+                COMMENT "Copying ${_subdir} to output dir"
+            )
+        endif()
+    endforeach()
+endfunction()
+
 add_library(camdrop_core INTERFACE)
 target_include_directories(camdrop_core
     INTERFACE
@@ -192,10 +224,7 @@ target_include_directories(camdrop_core
 )
 target_link_libraries(camdrop_core
     INTERFACE
-        wirehair
-        correct_static
-        libzstd_static
-        camdrop_opencv
+        wirehair correct_static libzstd_static camdrop_opencv
 )
 
 add_executable(debug src/test/test_codec.cpp)
@@ -215,42 +244,67 @@ if(CAMDROP_BUILD_VISION)
     camdrop_configure_target(file_video_encoder)
     target_link_libraries(file_video_encoder PRIVATE camdrop_core camdrop_vision_common camdrop_opencv)
     add_dependencies(file_video_encoder wirehair correct_static libzstd_static)
+    camdrop_copy_ffmpeg_binary(file_video_encoder)
 
     if(CAMDROP_BUILD_ORT_PIPELINE)
         add_library(camdrop_vision_ort STATIC ${VISION_ORT_SRC})
         camdrop_configure_target(camdrop_vision_ort)
         target_link_libraries(camdrop_vision_ort
             PUBLIC
-                camdrop_vision_common
-                camdrop_opencv
-                onnxruntime::onnxruntime
+                camdrop_vision_common camdrop_opencv onnxruntime::onnxruntime
         )
 
         add_executable(frame_scanner src/misc/frame_scanner.cpp)
         camdrop_configure_target(frame_scanner)
         target_link_libraries(frame_scanner PRIVATE camdrop_vision_ort camdrop_opencv)
         camdrop_copy_onnxruntime_dll(frame_scanner)
+        camdrop_copy_resource_dir(frame_scanner)
 
         add_executable(anchor_scanner src/misc/anchor_scanner.cpp)
         camdrop_configure_target(anchor_scanner)
         target_link_libraries(anchor_scanner PRIVATE onnxruntime::onnxruntime camdrop_opencv)
         camdrop_copy_onnxruntime_dll(anchor_scanner)
+        camdrop_copy_resource_dir(anchor_scanner)
 
         add_executable(file_video_decoder src/misc/file_video_decoder.cpp)
         camdrop_configure_target(file_video_decoder)
         target_link_libraries(file_video_decoder PRIVATE camdrop_core camdrop_vision_ort camdrop_opencv)
         add_dependencies(file_video_decoder wirehair correct_static libzstd_static)
         camdrop_copy_onnxruntime_dll(file_video_decoder)
+        camdrop_copy_ffmpeg_binary(file_video_decoder)
+        camdrop_copy_resource_dir(file_video_decoder)
 
         add_executable(realshot_compare src/misc/realshot_compare.cpp)
         camdrop_configure_target(realshot_compare)
         target_link_libraries(realshot_compare PRIVATE camdrop_vision_ort camdrop_opencv)
         camdrop_copy_onnxruntime_dll(realshot_compare)
+        camdrop_copy_resource_dir(realshot_compare)
 
         add_executable(recognizer_diff src/misc/recognizer_diff.cpp)
         camdrop_configure_target(recognizer_diff)
         target_link_libraries(recognizer_diff PRIVATE camdrop_vision_ort camdrop_opencv)
         camdrop_copy_onnxruntime_dll(recognizer_diff)
+        camdrop_copy_resource_dir(recognizer_diff)
+
+        add_library(camdrop_vision_common_rect STATIC ${VISION_COMMON_SRC})
+        camdrop_configure_target(camdrop_vision_common_rect)
+        target_compile_definitions(camdrop_vision_common_rect PRIVATE ${CAMDROP_RECT_LAYOUT_DEFS})
+        target_link_libraries(camdrop_vision_common_rect PUBLIC camdrop_opencv)
+
+        add_library(camdrop_vision_ort_rect STATIC ${VISION_ORT_SRC})
+        camdrop_configure_target(camdrop_vision_ort_rect)
+        target_compile_definitions(camdrop_vision_ort_rect PRIVATE ${CAMDROP_RECT_LAYOUT_DEFS})
+        target_link_libraries(camdrop_vision_ort_rect
+            PUBLIC
+                camdrop_vision_common_rect camdrop_opencv onnxruntime::onnxruntime
+        )
+
+        add_executable(rect_layout_probe src/misc/rect_layout_probe.cpp)
+        camdrop_configure_target(rect_layout_probe)
+        target_compile_definitions(rect_layout_probe PRIVATE ${CAMDROP_RECT_LAYOUT_DEFS})
+        target_link_libraries(rect_layout_probe PRIVATE camdrop_vision_ort_rect camdrop_opencv)
+        camdrop_copy_onnxruntime_dll(rect_layout_probe)
+        camdrop_copy_resource_dir(rect_layout_probe)
     endif()
 endif()
 
@@ -258,6 +312,13 @@ if(CAMDROP_BUILD_MISC_TOOLS)
     add_executable(pattern_generator src/misc/pattern_generator.cpp)
     camdrop_configure_target(pattern_generator)
     target_link_libraries(pattern_generator PRIVATE camdrop_core)
+
+    add_executable(fullscreen_player src/misc/fullscreen_player.cpp)
+    camdrop_configure_target(fullscreen_player)
+    target_link_libraries(fullscreen_player PRIVATE camdrop_opencv)
+    if(WIN32)
+        target_link_libraries(fullscreen_player PRIVATE d3d11 dxgi d3dcompiler dwmapi winmm avrt ole32)
+    endif()
 
     add_executable(config_acc_test src/misc/config_acc_test.cpp)
     camdrop_configure_target(config_acc_test)

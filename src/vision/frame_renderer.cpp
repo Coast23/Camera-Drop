@@ -5,6 +5,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "util/config.hpp"
+#include "util/errors.hpp"
 #include "vision/visual_frame_codec.hpp"
 
 namespace camdrop::vision {
@@ -122,7 +123,13 @@ PatternFrameRenderer::PatternFrameRenderer(PatternDictionary dict)
  * @return 渲染后的BGR图像
  */
 cv::Mat PatternFrameRenderer::Render(const std::vector<uint8_t>& frame_bytes) const {
-    return RenderInterleavedSymbols(FrameBytesToInterleavedSymbols(frame_bytes));
+    std::vector<uint8_t> symbols;
+    try {
+        symbols = FrameBytesToInterleavedSymbols(frame_bytes);
+    } catch (const ImageError& e) {
+        throw ImageFormatError(std::string("Failed to convert frame bytes: ") + e.what());
+    }
+    return RenderInterleavedSymbols(symbols);
 }
 
 /**
@@ -132,7 +139,8 @@ cv::Mat PatternFrameRenderer::Render(const std::vector<uint8_t>& frame_bytes) co
  */
 cv::Mat PatternFrameRenderer::RenderInterleavedSymbols(const std::vector<uint8_t>& interleaved_symbols) const {
     if (interleaved_symbols.size() != Config::UINTS_COUNT) {
-        throw std::runtime_error("render symbol count mismatch");
+        throw ImageSizeError("Render symbol count " + std::to_string(interleaved_symbols.size()) + 
+                            " != UINTS_COUNT " + std::to_string(Config::UINTS_COUNT));
     }
 
     cv::Mat img = cv::Mat::zeros(Config::IMG_HEIGHT, Config::IMG_WIDTH, CV_8UC3);
@@ -156,7 +164,8 @@ cv::Mat PatternFrameRenderer::RenderInterleavedSymbols(const std::vector<uint8_t
     }
 
     if (idx != interleaved_symbols.size()) {
-        throw std::runtime_error("render symbol layout mismatch");
+        throw ImageFormatError("Render symbol layout mismatch: processed " + std::to_string(idx) + 
+                              " symbols, expected " + std::to_string(interleaved_symbols.size()));
     }
     return img;
 }

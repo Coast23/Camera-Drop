@@ -1,38 +1,169 @@
 #pragma once
+#include "errors.hpp"
 #include <cmath>
 #include <string>
 #include <cstdint>
 #include <stdexcept>
 
+#ifndef CAMDROP_CFG_IMG_WIDTH
+#define CAMDROP_CFG_IMG_WIDTH 0
+#endif
+
+#ifndef CAMDROP_CFG_IMG_HEIGHT
+#define CAMDROP_CFG_IMG_HEIGHT 0
+#endif
+
+#ifndef CAMDROP_CFG_STRIDE
+#define CAMDROP_CFG_STRIDE 9
+#endif
+
+#ifndef CAMDROP_CFG_MARGIN
+#define CAMDROP_CFG_MARGIN 9
+#endif
+
+#ifndef CAMDROP_CFG_TILE_SIZE
+#define CAMDROP_CFG_TILE_SIZE 8
+#endif
+
+#ifndef CAMDROP_CFG_ANCHOR_OUT_START
+#define CAMDROP_CFG_ANCHOR_OUT_START 2
+#endif
+
+#ifndef CAMDROP_CFG_ANCHOR_L1_SIZE
+#define CAMDROP_CFG_ANCHOR_L1_SIZE 56
+#endif
+
+#ifndef CAMDROP_CFG_ANCHOR_L2_INSET
+#define CAMDROP_CFG_ANCHOR_L2_INSET 7
+#endif
+
+#ifndef CAMDROP_CFG_ANCHOR_L2_SIZE
+#define CAMDROP_CFG_ANCHOR_L2_SIZE 42
+#endif
+
+#ifndef CAMDROP_CFG_ANCHOR_L3_INSET
+#define CAMDROP_CFG_ANCHOR_L3_INSET 14
+#endif
+
+#ifndef CAMDROP_CFG_ANCHOR_L3_SIZE
+#define CAMDROP_CFG_ANCHOR_L3_SIZE 28
+#endif
+
+#ifndef CAMDROP_CFG_ANCHOR_L4_INSET
+#define CAMDROP_CFG_ANCHOR_L4_INSET 21
+#endif
+
+#ifndef CAMDROP_CFG_ANCHOR_L4_SIZE
+#define CAMDROP_CFG_ANCHOR_L4_SIZE 14
+#endif
+
+#ifndef CAMDROP_CFG_ANCHOR_RESERVED_CELLS
+#define CAMDROP_CFG_ANCHOR_RESERVED_CELLS 6
+#endif
+
+#ifndef CAMDROP_CFG_CALIB_ROW
+#define CAMDROP_CFG_CALIB_ROW 0
+#endif
+
+#ifndef CAMDROP_CFG_CALIB_COL_BEGIN
+#define CAMDROP_CFG_CALIB_COL_BEGIN 6
+#endif
+
+#ifndef CAMDROP_CFG_CALIB_COL_END
+#define CAMDROP_CFG_CALIB_COL_END 14
+#endif
+
+#ifndef CAMDROP_CFG_HEADER_ROW
+#define CAMDROP_CFG_HEADER_ROW 0
+#endif
+
+#ifndef CAMDROP_CFG_HEADER_COL_BEGIN
+#define CAMDROP_CFG_HEADER_COL_BEGIN 14
+#endif
+
+#ifndef CAMDROP_CFG_HEADER_COL_END
+#define CAMDROP_CFG_HEADER_COL_END 46
+#endif
+
+#ifndef CAMDROP_CFG_BITS_PER_UNIT
+#define CAMDROP_CFG_BITS_PER_UNIT 6
+#endif
+
+#ifndef CAMDROP_CFG_LAYOUT_ASPECT_NUM
+#define CAMDROP_CFG_LAYOUT_ASPECT_NUM 16
+#endif
+
+#ifndef CAMDROP_CFG_LAYOUT_ASPECT_DEN
+#define CAMDROP_CFG_LAYOUT_ASPECT_DEN 9
+#endif
+
+#ifndef CAMDROP_CFG_SHORT_EDGE_PATTERNS
+#define CAMDROP_CFG_SHORT_EDGE_PATTERNS 110
+#endif
+
+#ifndef CAMDROP_CFG_MAX_FILE_SIZE
+#define CAMDROP_CFG_MAX_FILE_SIZE (60 * 1024 * 1024)
+#endif
+
+constexpr int camdrop_round_div_constexpr(int num, int den) {
+    return (num + den / 2) / den;
+}
+
+constexpr int camdrop_max_constexpr(int a, int b) {
+    return a > b ? a : b;
+}
+
+constexpr bool CAMDROP_HAS_EXPLICIT_IMAGE_SIZE =
+    (CAMDROP_CFG_IMG_WIDTH > 0) && (CAMDROP_CFG_IMG_HEIGHT > 0);
+
+constexpr int CAMDROP_DERIVED_LONG_EDGE_PATTERNS = camdrop_max_constexpr(
+    1,
+    camdrop_round_div_constexpr(
+        CAMDROP_CFG_SHORT_EDGE_PATTERNS * CAMDROP_CFG_LAYOUT_ASPECT_NUM,
+        CAMDROP_CFG_LAYOUT_ASPECT_DEN));
+
 class Config {
 public:
     // 图像基本配置
-    static const int IMG_WIDTH  = 1024;
-    static const int IMG_HEIGHT = 1024;
-    static const int STRIDE     = 9;
-    static const int MARGIN     = 8;
-    static const int TILE_SIZE  = 8;
+    static constexpr int STRIDE     = CAMDROP_CFG_STRIDE;
+    static constexpr int MARGIN     = CAMDROP_CFG_MARGIN;
+    static constexpr int TILE_SIZE  = CAMDROP_CFG_TILE_SIZE;
+    static constexpr int LAYOUT_ASPECT_NUM = CAMDROP_CFG_LAYOUT_ASPECT_NUM;
+    static constexpr int LAYOUT_ASPECT_DEN = CAMDROP_CFG_LAYOUT_ASPECT_DEN;
+    static constexpr int SHORT_EDGE_PATTERNS = CAMDROP_CFG_SHORT_EDGE_PATTERNS;
 
-    static constexpr int GRID_R = (IMG_HEIGHT - MARGIN * 2) / STRIDE;
-    static constexpr int GRID_C = (IMG_WIDTH - MARGIN * 2)  / STRIDE;
+    static constexpr int GRID_R = CAMDROP_HAS_EXPLICIT_IMAGE_SIZE
+        ? (CAMDROP_CFG_IMG_HEIGHT - MARGIN * 2) / STRIDE
+        : SHORT_EDGE_PATTERNS;
+    static constexpr int GRID_C = CAMDROP_HAS_EXPLICIT_IMAGE_SIZE
+        ? (CAMDROP_CFG_IMG_WIDTH - MARGIN * 2) / STRIDE
+        : CAMDROP_DERIVED_LONG_EDGE_PATTERNS;
+    static constexpr int IMG_WIDTH  = CAMDROP_HAS_EXPLICIT_IMAGE_SIZE
+        ? CAMDROP_CFG_IMG_WIDTH
+        : (MARGIN * 2 + GRID_C * STRIDE);
+    static constexpr int IMG_HEIGHT = CAMDROP_HAS_EXPLICIT_IMAGE_SIZE
+        ? CAMDROP_CFG_IMG_HEIGHT
+        : (MARGIN * 2 + GRID_R * STRIDE);
+    static constexpr int LONG_EDGE_PATTERNS = GRID_C;
+    static constexpr int TOTAL_PATTERN_COUNT = GRID_R * GRID_C;
 
     // 锚点与布局保留区配置
-    static const int ANCHOR_OUT_START = 2;
-    static const int ANCHOR_L1_SIZE   = 56;
-    static const int ANCHOR_L2_INSET  = 7;
-    static const int ANCHOR_L2_SIZE   = 42;
-    static const int ANCHOR_L3_INSET  = 14;
-    static const int ANCHOR_L3_SIZE   = 28;
-    static const int ANCHOR_L4_INSET  = 21;
-    static const int ANCHOR_L4_SIZE   = 14;
+    static constexpr int ANCHOR_OUT_START = CAMDROP_CFG_ANCHOR_OUT_START;
+    static constexpr int ANCHOR_L1_SIZE   = CAMDROP_CFG_ANCHOR_L1_SIZE;
+    static constexpr int ANCHOR_L2_INSET  = CAMDROP_CFG_ANCHOR_L2_INSET;
+    static constexpr int ANCHOR_L2_SIZE   = CAMDROP_CFG_ANCHOR_L2_SIZE;
+    static constexpr int ANCHOR_L3_INSET  = CAMDROP_CFG_ANCHOR_L3_INSET;
+    static constexpr int ANCHOR_L3_SIZE   = CAMDROP_CFG_ANCHOR_L3_SIZE;
+    static constexpr int ANCHOR_L4_INSET  = CAMDROP_CFG_ANCHOR_L4_INSET;
+    static constexpr int ANCHOR_L4_SIZE   = CAMDROP_CFG_ANCHOR_L4_SIZE;
 
-    static const int ANCHOR_RESERVED_CELLS = 6;
-    static const int CALIB_ROW = 0;
-    static const int CALIB_COL_BEGIN = 6;
-    static const int CALIB_COL_END   = 14;
-    static const int HEADER_ROW = 0;
-    static const int HEADER_COL_BEGIN = 14;
-    static const int HEADER_COL_END   = 46;
+    static constexpr int ANCHOR_RESERVED_CELLS = CAMDROP_CFG_ANCHOR_RESERVED_CELLS;
+    static constexpr int CALIB_ROW = CAMDROP_CFG_CALIB_ROW;
+    static constexpr int CALIB_COL_BEGIN = CAMDROP_CFG_CALIB_COL_BEGIN;
+    static constexpr int CALIB_COL_END   = CAMDROP_CFG_CALIB_COL_END;
+    static constexpr int HEADER_ROW = CAMDROP_CFG_HEADER_ROW;
+    static constexpr int HEADER_COL_BEGIN = CAMDROP_CFG_HEADER_COL_BEGIN;
+    static constexpr int HEADER_COL_END   = CAMDROP_CFG_HEADER_COL_END;
 
     static constexpr int RIGHT_INNER_COL  = GRID_C - ANCHOR_RESERVED_CELLS - 1;
     static constexpr int BOTTOM_INNER_ROW = GRID_R - ANCHOR_RESERVED_CELLS - 1;
@@ -48,7 +179,7 @@ public:
     static constexpr uint32_t PAYLOAD_SYMBOL_COUNT =
         FRAME_SYMBOL_COUNT_WITH_CALIB - CALIB_SYMBOL_COUNT - HEADER_SYMBOL_COUNT;
 
-    static const uint32_t BITS_PER_UNIT = 6;                      // 每个图案单元能编码的位数
+    static constexpr uint32_t BITS_PER_UNIT = CAMDROP_CFG_BITS_PER_UNIT; // 每个图案单元能编码的位数
     static constexpr uint32_t UINTS_COUNT = FRAME_SYMBOL_COUNT_WITH_CALIB
                                           - CALIB_SYMBOL_COUNT;  // 一帧真实承载的数据单元数（header + payload）
     static constexpr uint32_t UNITS_PER_BYTE =                    // 每个字节能编码多少图案单元
@@ -72,16 +203,23 @@ public:
     static const uint32_t FOUNTAIN_HEADER_SIZE = 10;  // 帧头大小 file_size(4) + original_size(4) + block_id(2)
     static const uint32_t FOUNTAIN_CRC_SIZE = 4;      // 帧尾 CRC 大小
 
-    static constexpr uint32_t MAX_FILE_SIZE = 60 * 1024 * 1024; // 限制文件大小不超过 60 MB
+    static constexpr uint32_t MAX_FILE_SIZE = CAMDROP_CFG_MAX_FILE_SIZE; // 限制文件大小不超过指定上限
     
     inline static float REDUNDANCY_FACTOR = 1.01f;  // 冗余系数，不要设太大，优先调 RS 的 ECC 比例！
 
     // 动态参数，可由命令行覆盖
     inline static int COMPRESSION_LEVEL = 9;        // Zstd 压缩等级
-    inline static int OUTPUT_FPS = 30;              // 视频输出帧率
+    inline static int OUTPUT_FPS = 20;              // 视频输出帧率
     inline static std::string INPUT_VIDEO_FILE = "";
     inline static std::string OUTPUT_VIDEO_FILE = "output.avi";
     inline static std::string VOUT_FILE = "vout.bin";
+
+    static_assert(GRID_R > ANCHOR_RESERVED_CELLS * 2, "GRID_R is too small for anchors");
+    static_assert(GRID_C > ANCHOR_RESERVED_CELLS * 2, "GRID_C is too small for anchors");
+    static_assert(CALIB_COL_BEGIN >= ANCHOR_RESERVED_CELLS, "Calibration cells overlap left anchor");
+    static_assert(CALIB_COL_END <= GRID_C - ANCHOR_RESERVED_CELLS, "Calibration cells overlap right anchor");
+    static_assert(HEADER_COL_BEGIN >= CALIB_COL_END, "Header overlaps calibration area");
+    static_assert(HEADER_COL_END <= GRID_C - ANCHOR_RESERVED_CELLS, "Header overlaps right anchor");
 
 private:
     static double binomial_cdf(int n, int k, double p){
@@ -116,7 +254,7 @@ public:
         // 根据 RS 纠错能力计算 ECC。利用 3-sigma 原则计算
         double miu = best_N * p;
         double sigma = std::sqrt(best_N * p * (1 - p));
-        int E = static_cast<int>(std::ceil( miu + 3.05 * sigma));
+        uint32_t E = static_cast<uint32_t>(std::ceil(miu + 3.05 * sigma));
         
         if((E << 1) >= RS_BLOCK_SIZE){ // Oops
             throw std::runtime_error("The acc is too low to transmit data!");
@@ -163,9 +301,12 @@ public:
         printf("RS Config: N = %u, K = %u, P = %u\n", RS_BLOCK_SIZE, RS_DATA_SIZE, RS_PARITY_SIZE);
         printf("Fountain:  M = %u blocks/chunk, %u chunks/frame\n", RS_BLOCKS_PER_FOUNTAIN_CHUNK, FOUNTAIN_PACKETS_PER_FRAME);
         printf("Redundancy factor: %.3f\n", REDUNDANCY_FACTOR);
+        printf("Layout: aspect %d:%d, image %dx%d, grid %dx%d, short-edge patterns %d\n",
+               LAYOUT_ASPECT_NUM, LAYOUT_ASPECT_DEN,
+               IMG_WIDTH, IMG_HEIGHT, GRID_C, GRID_R, SHORT_EDGE_PATTERNS);
         printf("Frame Capacity: %u bytes\n", PACKET_CAPACITY);
         printf("Effective Data: %u bytes/frame (%.2f%%)\n", effective_bytes_per_frame, efficiency);
-        printf("Max File Size : %.2f MB\n", actual_max_mb);
+    //    printf("Max File Size : %.2f MB\n", actual_max_mb);
         printf("---------------------------------------\n");
     }
 };
