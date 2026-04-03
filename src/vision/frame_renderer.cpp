@@ -78,8 +78,9 @@ void draw_symbol_tile(cv::Mat& img,
     const int pat_idx = symbol & pat_mask;
     const int color_idx = symbol >> dict.pattern_bits();
     if (pat_idx < 0 || pat_idx >= dict.size()) {
-        throw ImageFormatError("Symbol pattern index " + std::to_string(pat_idx) + 
-                              " out of range [0, " + std::to_string(dict.size()) + ")");
+        throw std::runtime_error("symbol pattern index out of range: index " +
+                                 std::to_string(pat_idx) + " >= size " +
+                                 std::to_string(dict.size()));
     }
     const uint64_t mask = dict.masks64[pat_idx];
     const cv::Vec3b color = get_color_bgr(color_idx);
@@ -96,12 +97,12 @@ void draw_symbol_tile(cv::Mat& img,
 
 void validate_dict(const PatternDictionary& dict) {
     if (dict.empty()) {
-        throw PatternDictInvalidError("Pattern dictionary is empty");
+        throw std::runtime_error("pattern dictionary is empty (contains 0 elements)");
     }
     const int size = dict.size();
     if ((size & (size - 1)) != 0) {
-        throw PatternDictInvalidError("Pattern dictionary size " + std::to_string(size) + 
-                                     " is not a power of two");
+        throw std::runtime_error("pattern dictionary size must be a power of two, got: " + 
+                                 std::to_string(size));
     }
 }
 

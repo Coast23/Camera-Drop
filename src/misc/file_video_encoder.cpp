@@ -73,6 +73,9 @@ struct ScreenSize {
 };
 
 std::string quote_arg(const std::string& value) {
+    if (value.find(' ') == std::string::npos && value.find('"') == std::string::npos) {
+        return value;
+    }
     std::string out = "\"";
     for (char ch : value) {
         if (ch == '"') out += "\\\"";

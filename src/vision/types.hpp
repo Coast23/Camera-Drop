@@ -42,7 +42,7 @@ struct CornerQuad {
     cv::Point2f br;
     int out_size = std::max(kImageWidth, kImageHeight);
 
-    bool valid() const {
+    [[nodiscard]] bool valid() const {
         return std::isfinite(tl.x) && std::isfinite(tl.y)
             && std::isfinite(tr.x) && std::isfinite(tr.y)
             && std::isfinite(bl.x) && std::isfinite(bl.y)

@@ -119,13 +119,16 @@ std::vector<Detection> parse_output(const Ort::Value& output,
                                     float conf_threshold) {
     const auto shape = output.GetTensorTypeAndShapeInfo().GetShape();
     if (shape.size() < 3) {
-        throw std::runtime_error("unexpected output0 shape");
+        throw std::runtime_error("unexpected output0 shape: size " + 
+                                 std::to_string(shape.size()));
     }
 
     const int n_dets = static_cast<int>(shape[1]);
     const int feat_dim = static_cast<int>(shape[2]);
     if (feat_dim < kFeatureDimMin) {
-        throw std::runtime_error("unexpected output0 feature dimension");
+        throw std::runtime_error("unexpected output0 feature dimension: expected >=" + 
+                                 std::to_string(kFeatureDimMin) + ", got " + 
+                                 std::to_string(feat_dim));
     }
 
     const float* data = output.GetTensorData<float>();
