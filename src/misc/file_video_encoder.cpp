@@ -46,7 +46,7 @@ struct Options {
     int screen_height = 0;
     int code_size = 0;
     double code_fit = 0.96;
-    bool wrap_screen = true;
+    bool wrap_screen = false;
     int limit_frames = 0;
     int threads = 0;
 };
@@ -339,8 +339,12 @@ int build_video_with_ffmpeg(const Options& opts, const fs::path& out_dir) {
         opts.ffmpeg_preset,
         "-crf",
         std::to_string(opts.ffmpeg_crf),
+        "-vf",
+        "crop=trunc(iw/2)*2:trunc(ih/2)*2",
         "-pix_fmt",
         opts.ffmpeg_pix_fmt,
+        "-vf",
+        "crop=trunc(iw/2)*2:trunc(ih/2)*2",
         "-tune",
         "stillimage",
         "-movflags",
