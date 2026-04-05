@@ -14,7 +14,7 @@
 #endif
 
 #ifndef CAMDROP_CFG_STRIDE
-#define CAMDROP_CFG_STRIDE 10
+#define CAMDROP_CFG_STRIDE 9
 #endif
 
 #ifndef CAMDROP_CFG_MARGIN

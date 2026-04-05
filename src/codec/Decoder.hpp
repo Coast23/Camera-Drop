@@ -144,6 +144,18 @@ public:
         return fountain_decoder_->is_complete();
     }
 
+    uint32_t blocks_needed() const {
+        return fountain_decoder_->blocks_needed();
+    }
+
+    uint32_t blocks_required() const {
+        return fountain_decoder_->blocks_required();
+    }
+
+    uint32_t blocks_received() const {
+        return fountain_decoder_->blocks_received();
+    }
+
     void save_to_file(const std::string& filename){
         if(!is_complete()) {
             throw DecoderRuntimeError("Decoding not complete, cannot save file");

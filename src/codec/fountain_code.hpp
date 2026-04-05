@@ -211,6 +211,25 @@ public:
         return recovered;
     }
 
+    // 获取还需要多少块
+    uint32_t blocks_needed() const {
+        if (!init_) return 0;
+        uint32_t required = static_cast<uint32_t>((file_size_ + Config::FOUNTAIN_CHUNK_SIZE - 1) / Config::FOUNTAIN_CHUNK_SIZE);
+        uint32_t current = static_cast<uint32_t>(block_feeded_.size());
+        return current >= required ? 0 : required - current;
+    }
+
+    // 获取需要多少块才能解码
+    uint32_t blocks_required() const {
+        if (!init_) return 0;
+        return static_cast<uint32_t>((file_size_ + Config::FOUNTAIN_CHUNK_SIZE - 1) / Config::FOUNTAIN_CHUNK_SIZE);
+    }
+
+    // 获取已经接收的块数
+    uint32_t blocks_received() const {
+        return static_cast<uint32_t>(block_feeded_.size());
+    }
+
 private:
     WirehairCodec codec_;
     uint32_t file_size_;

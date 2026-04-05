@@ -757,7 +757,9 @@ int main(int argc, char** argv) {
                   << '\n';
 
         if (!decoder.is_complete() || !completed) {
-            std::cerr << "decode incomplete\n";
+            std::cerr << "decode incomplete: received " << decoder.blocks_received()
+                      << " / " << decoder.blocks_required()
+                      << " (needs " << decoder.blocks_needed() << " more)\n";
             return 2;
         }
 

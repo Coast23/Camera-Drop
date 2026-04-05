@@ -16,8 +16,8 @@ inline size_t resolve_thread_count(int requested) {
     if (requested > 0) {
         return static_cast<size_t>(requested);
     }
-    const unsigned int hc = std::thread::hardware_concurrency();
-    return hc == 0 ? 4u : static_cast<size_t>(hc);
+    // 默认开 4 个线程，如果需要用全部 CPU 核，请显式通过参数指定。
+    return 4u;
 }
 
 template <typename InitFn, typename Fn>
