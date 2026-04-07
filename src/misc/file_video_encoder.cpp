@@ -411,8 +411,8 @@ int main(int argc, char** argv) {
         std::cout << "compressed_bytes: " << encoder.compressed_size() << '\n';
         std::cout << "packet_count_required: " << packet_count_required << '\n';
         std::cout << "packet_count_recommended: " << packet_count_recommended << '\n';
-        if (opts.limit_frames > 0) {
-            std::cout << "logical_frame_limit: " << opts.limit_frames << '\n';
+        if (opts.target_frames > 0) {
+            std::cout << "target_frames: " << opts.target_frames << '\n';
             std::cout << "packet_count_emitted: " << emitted_packet_count << '\n';
         }
         std::cout << "logical_frames: " << logical_frames << '\n';
