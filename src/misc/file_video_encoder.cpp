@@ -48,6 +48,7 @@ struct Options {
     double code_fit = 0.96;
     bool wrap_screen = false;
     int limit_frames = 0;
+    int target_frames = 0;
     int threads = 0;
 };
 
@@ -156,7 +157,7 @@ void print_usage() {
     std::cout
         << "Usage: file_video_encoder --input <file> [--out-dir <dir>] [--patterns <dir>]\n"
         << "                          [--acc <0..1>] [--fps <n>] [--repeat <n>] [--threads <n>]\n"
-        << "                          [--limit-frames <n>]\n"
+        << "                          [--limit-frames <n>] [--target-frames <n>]\n"
         << "                          [--screen-width <n>] [--screen-height <n>]\n"
         << "                          [--code-size <n>] [--code-fit <0..1>] [--raw-frame-output]\n"
         << "                          [--video-out <file>] [--ffmpeg-bin <path>]\n"
@@ -193,6 +194,8 @@ Options parse_args(int argc, char** argv) {
             opts.repeat = std::stoi(argv[++i]);
         } else if (arg == "--limit-frames" && i + 1 < argc) {
             opts.limit_frames = std::stoi(argv[++i]);
+        } else if (arg == "--target-frames" && i + 1 < argc) {
+            opts.target_frames = std::stoi(argv[++i]);
         } else if (arg == "--screen-width" && i + 1 < argc) {
             opts.screen_width = std::stoi(argv[++i]);
         } else if (arg == "--screen-height" && i + 1 < argc) {
@@ -216,8 +219,8 @@ Options parse_args(int argc, char** argv) {
     if (opts.repeat <= 0) {
         throw ConfigRangeError("Repeat must be > 0, got " + std::to_string(opts.repeat));
     }
-    if (opts.limit_frames < 0) {
-        throw ConfigRangeError("Limit-frames must be >= 0, got " + std::to_string(opts.limit_frames));
+    if (opts.target_frames < 0) {
+        throw ConfigRangeError("Target-frames must be >= 0, got " + std::to_string(opts.target_frames));
     }
     if (!(opts.acc > 0.0 && opts.acc <= 1.0)) {
         throw ConfigRangeError("Accuracy must be in (0, 1], got " + std::to_string(opts.acc));
@@ -386,7 +389,7 @@ int main(int argc, char** argv) {
         camdrop::vision::PatternFrameRenderer renderer(dict);
 
         EncoderOptions encoder_opts;
-        encoder_opts.logical_frame_limit = static_cast<uint32_t>(std::max(0, opts.limit_frames));
+        encoder_opts.logical_frame_limit = static_cast<uint32_t>(std::max(0, opts.target_frames));
         Encoder encoder(opts.input_file, encoder_opts);
         if (!encoder.is_valid()) {
             throw EncoderInitError("Encoder initialization failed");
@@ -394,10 +397,9 @@ int main(int argc, char** argv) {
 
         const uint32_t packet_count_required = encoder.packet_count_required();
         const uint32_t packet_count_recommended = encoder.packet_count_recommended();
-        const uint32_t logical_frames = opts.limit_frames > 0
+        uint32_t logical_frames = opts.limit_frames > 0
             ? static_cast<uint32_t>(opts.limit_frames)
-            : (packet_count_recommended + Config::FOUNTAIN_PACKETS_PER_FRAME - 1)
-              / Config::FOUNTAIN_PACKETS_PER_FRAME;
+            : (opts.target_frames > 0 ? static_cast<uint32_t>(opts.target_frames) : (packet_count_recommended + Config::FOUNTAIN_PACKETS_PER_FRAME - 1) / Config::FOUNTAIN_PACKETS_PER_FRAME);
         const uint32_t emitted_packet_count = logical_frames * Config::FOUNTAIN_PACKETS_PER_FRAME;
 
         std::cout << "input: " << fs::absolute(opts.input_file).string() << '\n';
