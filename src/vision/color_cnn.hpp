@@ -9,22 +9,22 @@
 
 namespace camdrop::vision {
 
-struct PatternCnnOptions {
+struct ColorCnnOptions {
     int ort_threads = 1;
     size_t batch_size = 1024;
     std::string input_name = "input";
     std::string output_name = "logits";
 };
 
-class PatternCnnClassifier {
+class ColorCnnClassifier {
 public:
-    explicit PatternCnnClassifier(const std::string& model_path, PatternCnnOptions options = {});
+    explicit ColorCnnClassifier(const std::string& model_path, ColorCnnOptions options = {});
 
-    const PatternCnnOptions& options() const { return options_; }
-    std::vector<uint8_t> PredictPayloadPatterns(const cv::Mat& deskewed);
+    const ColorCnnOptions& options() const { return options_; }
+    std::vector<uint8_t> PredictPayloadColors(const cv::Mat& deskewed);
 
 private:
-    PatternCnnOptions options_;
+    ColorCnnOptions options_;
     Ort::Env env_;
     Ort::Session session_;
     std::vector<int16_t> payload_x_;

@@ -36,6 +36,7 @@ void print_usage() {
         << " [--model <onnx>]"
         << " [--patterns <dir>]"
         << " [--pattern-cnn-model <onnx>]"
+        << " [--color-cnn-model <onnx>]"
         << " [--deskew-out <png>]\n";
 }
 
@@ -79,6 +80,7 @@ int main(int argc, char** argv) {
     std::string model_path = default_model_path(argv[0]).string();
     std::string pattern_dir = default_pattern_dir(argv[0]).string();
     std::string pattern_cnn_model_path = default_pattern_cnn_model_path(argv[0]).string();
+    std::string color_cnn_model_path;
     std::string deskew_out;
 
     for (int i = 1; i < argc; ++i) {
@@ -89,6 +91,8 @@ int main(int argc, char** argv) {
             pattern_dir = argv[++i];
         } else if (arg == "--pattern-cnn-model" && i + 1 < argc) {
             pattern_cnn_model_path = argv[++i];
+        } else if (arg == "--color-cnn-model" && i + 1 < argc) {
+            color_cnn_model_path = argv[++i];
         } else if (arg == "--deskew-out" && i + 1 < argc) {
             deskew_out = argv[++i];
         } else if (!arg.empty() && arg[0] != '-' && image_path.empty()) {
@@ -126,6 +130,7 @@ int main(int argc, char** argv) {
         cfg.model_path = model_path;
         cfg.pattern_dir = pattern_dir;
         cfg.pattern_cnn_model_path = pattern_cnn_model_path;
+        cfg.color_cnn_model_path = color_cnn_model_path;
 
         camdrop::vision::FramePipeline pipeline(cfg);
         const camdrop::vision::PipelineResult result = pipeline.Process(frame);

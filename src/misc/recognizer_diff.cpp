@@ -4,6 +4,8 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -13,8 +15,10 @@
 #include <opencv2/imgproc.hpp>
 
 #include "util/config.hpp"
+#include "vision/color_cnn.hpp"
 #include "vision/frame_pipeline.hpp"
 #include "vision/frame_renderer.hpp"
+#include "vision/pattern_cnn.hpp"
 #include "vision/pattern_dict.hpp"
 #include "vision/recognizer.hpp"
 #include "vision/visual_frame_codec.hpp"
@@ -31,6 +35,7 @@ struct Options {
     std::string model_path = "web/model/best_dynamic.onnx";
     std::string pattern_dir = "pattern_finder/best_v2";
     std::string pattern_cnn_model_path;
+    std::string color_cnn_model_path;
     bool source_deskewed = false;
     bool capture_deskewed = false;
 };
@@ -42,11 +47,17 @@ struct DecodedFrame {
     bool ok = false;
 };
 
+struct PackedBits {
+    std::vector<uint8_t> bytes;
+    int tail_bits = 0;
+};
+
 void print_usage() {
     std::cout
         << "Usage: recognizer_diff --source <image> --capture <image> [--out <dir>]\n"
         << "                       [--dump-patches <dir>] [--model <onnx>] [--patterns <dir>]\n"
         << "                       [--pattern-cnn-model <onnx>]\n"
+        << "                       [--color-cnn-model <onnx>]\n"
         << "                       [--source-deskewed] [--capture-deskewed]\n";
 }
 
@@ -68,6 +79,8 @@ Options parse_args(int argc, char** argv) {
             opts.pattern_dir = argv[++i];
         } else if (arg == "--pattern-cnn-model" && i + 1 < argc) {
             opts.pattern_cnn_model_path = argv[++i];
+        } else if (arg == "--color-cnn-model" && i + 1 < argc) {
+            opts.color_cnn_model_path = argv[++i];
         } else if (arg == "--source-deskewed") {
             opts.source_deskewed = true;
         } else if (arg == "--capture-deskewed") {
@@ -98,9 +111,75 @@ bool is_header_cell(int r, int c) {
     return r == Config::HEADER_ROW && c >= Config::HEADER_COL_BEGIN && c < Config::HEADER_COL_END;
 }
 
+PackedBits pack6_bits(const std::vector<uint8_t>& symbols) {
+    PackedBits packed;
+    packed.bytes.resize((symbols.size() * 6 + 7) / 8);
+    size_t write_idx = 0;
+    uint32_t buffer = 0;
+    int bits = 0;
+    for (uint8_t symbol : symbols) {
+        buffer = (buffer << 6) | (symbol & 0x3FU);
+        bits += 6;
+        while (bits >= 8) {
+            packed.bytes[write_idx++] = static_cast<uint8_t>((buffer >> (bits - 8)) & 0xFFU);
+            bits -= 8;
+        }
+    }
+    if (bits > 0) {
+        packed.bytes[write_idx++] = static_cast<uint8_t>((buffer << (8 - bits)) & 0xFFU);
+    }
+    packed.bytes.resize(write_idx);
+    packed.tail_bits = bits;
+    return packed;
+}
+
+void apply_pattern_cnn_override(camdrop::vision::RecognizeResult& recognize,
+                                const cv::Mat& deskewed_image,
+                                camdrop::vision::PatternCnnClassifier* classifier) {
+    if (!classifier || !recognize.ok || recognize.payload_symbols.empty()) {
+        return;
+    }
+    const std::vector<uint8_t> payload_patterns = classifier->PredictPayloadPatterns(deskewed_image);
+    if (payload_patterns.size() != recognize.payload_symbols.size()) {
+        return;
+    }
+    for (size_t i = 0; i < recognize.payload_symbols.size(); ++i) {
+        recognize.payload_symbols[i] =
+            static_cast<uint8_t>((recognize.payload_symbols[i] & 0x30U) | (payload_patterns[i] & 0x0FU));
+    }
+    const PackedBits payload = pack6_bits(recognize.payload_symbols);
+    recognize.payload_bytes = payload.bytes;
+    recognize.payload_tail_bits = payload.tail_bits;
+}
+
+void apply_color_cnn_override(camdrop::vision::RecognizeResult& recognize,
+                              const cv::Mat& deskewed_image,
+                              camdrop::vision::ColorCnnClassifier* classifier) {
+    if (!classifier || !recognize.ok || recognize.payload_symbols.empty()) {
+        return;
+    }
+    const std::vector<uint8_t> payload_colors = classifier->PredictPayloadColors(deskewed_image);
+    if (payload_colors.size() != recognize.payload_symbols.size()) {
+        return;
+    }
+    const uint8_t pattern_mask = recognize.pattern_bits > 0
+        ? static_cast<uint8_t>((1U << recognize.pattern_bits) - 1U)
+        : 0x0FU;
+    for (size_t i = 0; i < recognize.payload_symbols.size(); ++i) {
+        recognize.payload_symbols[i] =
+            static_cast<uint8_t>(((payload_colors[i] & 0x03U) << recognize.pattern_bits)
+                                 | (recognize.payload_symbols[i] & pattern_mask));
+    }
+    const PackedBits payload = pack6_bits(recognize.payload_symbols);
+    recognize.payload_bytes = payload.bytes;
+    recognize.payload_tail_bits = payload.tail_bits;
+}
+
 DecodedFrame decode_frame(const fs::path& path,
                           camdrop::vision::FramePipeline* pipeline,
                           camdrop::vision::PatternRecognizer* recognizer,
+                          camdrop::vision::PatternCnnClassifier* deskewed_pattern_cnn,
+                          camdrop::vision::ColorCnnClassifier* deskewed_color_cnn,
                           bool input_deskewed) {
     DecodedFrame out;
     out.raw = cv::imread(path.string(), cv::IMREAD_COLOR);
@@ -111,6 +190,8 @@ DecodedFrame decode_frame(const fs::path& path,
     if (input_deskewed) {
         out.deskewed = out.raw;
         out.result = recognizer->Decode(out.deskewed);
+        apply_pattern_cnn_override(out.result, out.deskewed, deskewed_pattern_cnn);
+        apply_color_cnn_override(out.result, out.deskewed, deskewed_color_cnn);
         out.ok = out.result.ok;
         return out;
     }
@@ -192,19 +273,52 @@ int main(int argc, char** argv) {
 
         const camdrop::vision::PatternDictionary dict =
             camdrop::vision::PatternDictionary::LoadFromDirectory(opts.pattern_dir);
-        camdrop::vision::PatternRecognizer recognizer(dict);
+        camdrop::vision::PatternRecognizer source_recognizer(dict);
+        camdrop::vision::PatternRecognizer capture_recognizer(dict);
+        std::unique_ptr<camdrop::vision::PatternCnnClassifier> capture_deskewed_pattern_cnn;
+        if (!opts.pattern_cnn_model_path.empty()) {
+            capture_deskewed_pattern_cnn = std::make_unique<camdrop::vision::PatternCnnClassifier>(
+                opts.pattern_cnn_model_path
+            );
+        }
+        std::unique_ptr<camdrop::vision::ColorCnnClassifier> capture_deskewed_color_cnn;
+        if (!opts.color_cnn_model_path.empty()) {
+            capture_deskewed_color_cnn = std::make_unique<camdrop::vision::ColorCnnClassifier>(
+                opts.color_cnn_model_path
+            );
+        }
 
-        camdrop::vision::FramePipelineConfig cfg;
-        cfg.model_path = opts.model_path;
-        cfg.pattern_dir = opts.pattern_dir;
-        cfg.pattern_cnn_model_path = opts.pattern_cnn_model_path;
-        camdrop::vision::FramePipeline pipeline(cfg);
+        camdrop::vision::FramePipelineConfig source_cfg;
+        source_cfg.model_path = opts.model_path;
+        source_cfg.pattern_dir = opts.pattern_dir;
+        camdrop::vision::FramePipeline source_pipeline_impl(source_cfg);
 
-        camdrop::vision::FramePipeline* source_pipeline = opts.source_deskewed ? nullptr : &pipeline;
-        camdrop::vision::FramePipeline* capture_pipeline = opts.capture_deskewed ? nullptr : &pipeline;
+        camdrop::vision::FramePipelineConfig capture_cfg;
+        capture_cfg.model_path = opts.model_path;
+        capture_cfg.pattern_dir = opts.pattern_dir;
+        capture_cfg.pattern_cnn_model_path = opts.pattern_cnn_model_path;
+        capture_cfg.color_cnn_model_path = opts.color_cnn_model_path;
+        camdrop::vision::FramePipeline capture_pipeline_impl(capture_cfg);
 
-        const DecodedFrame source = decode_frame(opts.source_path, source_pipeline, &recognizer, opts.source_deskewed);
-        const DecodedFrame capture = decode_frame(opts.capture_path, capture_pipeline, &recognizer, opts.capture_deskewed);
+        camdrop::vision::FramePipeline* source_pipeline = opts.source_deskewed ? nullptr : &source_pipeline_impl;
+        camdrop::vision::FramePipeline* capture_pipeline = opts.capture_deskewed ? nullptr : &capture_pipeline_impl;
+
+        const DecodedFrame source = decode_frame(
+            opts.source_path,
+            source_pipeline,
+            &source_recognizer,
+            nullptr,
+            nullptr,
+            opts.source_deskewed
+        );
+        const DecodedFrame capture = decode_frame(
+            opts.capture_path,
+            capture_pipeline,
+            &capture_recognizer,
+            capture_deskewed_pattern_cnn.get(),
+            capture_deskewed_color_cnn.get(),
+            opts.capture_deskewed
+        );
 
         if (!source.ok) {
             std::cerr << "source decode failed\n";
@@ -229,12 +343,18 @@ int main(int argc, char** argv) {
 
         size_t idx = 0;
         size_t symbol_ok = 0, pattern_ok = 0, color_ok = 0;
+        size_t color_ok_when_pattern_ok = 0;
+        size_t pattern_ok_total = 0;
+        size_t color_only_err = 0;
         size_t header_ok = 0, header_total = 0;
         size_t edge_total = 0, edge_symbol_err = 0;
         size_t center_total = 0, center_symbol_err = 0;
+        size_t edge_color_only_total = 0, edge_color_only_err = 0;
+        size_t center_color_only_total = 0, center_color_only_err = 0;
         std::vector<int> pattern_total(dict.size(), 0);
         std::vector<int> pattern_err(dict.size(), 0);
         std::vector<int> pattern_confusion(dict.size() * dict.size(), 0);
+        std::vector<int> color_confusion(16, 0);
 
         std::vector<int> row_err(Config::GRID_R, 0);
         std::vector<int> col_err(Config::GRID_C, 0);
@@ -262,9 +382,15 @@ int main(int argc, char** argv) {
                 const uint8_t cap_sym = cap_symbols[idx];
                 const int src_pat = src_sym & pat_mask;
                 const int cap_pat = cap_sym & pat_mask;
+                const int src_col = static_cast<int>(src_sym) >> pat_bits;
+                const int cap_col = static_cast<int>(cap_sym) >> pat_bits;
                 const bool sym_ok = (src_sym == cap_sym);
                 const bool pat_ok_cell = ((src_sym & pat_mask) == (cap_sym & pat_mask));
-                const bool col_ok_cell = ((src_sym >> pat_bits) == (cap_sym >> pat_bits));
+                const bool col_ok_cell = (src_col == cap_col);
+
+                if (src_col >= 0 && src_col < 4 && cap_col >= 0 && cap_col < 4) {
+                    color_confusion[src_col * 4 + cap_col]++;
+                }
 
                 if (src_pat >= 0 && src_pat < dict.size()) {
                     pattern_total[src_pat]++;
@@ -279,6 +405,11 @@ int main(int argc, char** argv) {
                 symbol_ok += sym_ok ? 1 : 0;
                 pattern_ok += pat_ok_cell ? 1 : 0;
                 color_ok += col_ok_cell ? 1 : 0;
+                if (pat_ok_cell) {
+                    ++pattern_ok_total;
+                    color_ok_when_pattern_ok += col_ok_cell ? 1 : 0;
+                    color_only_err += col_ok_cell ? 0 : 1;
+                }
 
                 const bool is_header = is_header_cell(r, c);
                 if (is_header) {
@@ -292,9 +423,17 @@ int main(int argc, char** argv) {
                 if (is_edge) {
                     edge_total++;
                     if (!sym_ok) edge_symbol_err++;
+                    if (pat_ok_cell) {
+                        ++edge_color_only_total;
+                        if (!col_ok_cell) ++edge_color_only_err;
+                    }
                 } else {
                     center_total++;
                     if (!sym_ok) center_symbol_err++;
+                    if (pat_ok_cell) {
+                        ++center_color_only_total;
+                        if (!col_ok_cell) ++center_color_only_err;
+                    }
                 }
 
                 if (!sym_ok) {
@@ -346,9 +485,18 @@ int main(int argc, char** argv) {
         const double sym_acc = total > 0 ? 100.0 * static_cast<double>(symbol_ok) / total : 0.0;
         const double pat_acc = total > 0 ? 100.0 * static_cast<double>(pattern_ok) / total : 0.0;
         const double col_acc = total > 0 ? 100.0 * static_cast<double>(color_ok) / total : 0.0;
+        const double col_acc_given_pat = pattern_ok_total > 0
+            ? 100.0 * static_cast<double>(color_ok_when_pattern_ok) / static_cast<double>(pattern_ok_total)
+            : 0.0;
         const double header_acc = header_total > 0 ? 100.0 * static_cast<double>(header_ok) / header_total : 0.0;
         const double edge_err = edge_total > 0 ? 100.0 * static_cast<double>(edge_symbol_err) / edge_total : 0.0;
         const double center_err = center_total > 0 ? 100.0 * static_cast<double>(center_symbol_err) / center_total : 0.0;
+        const double edge_color_only_err_rate = edge_color_only_total > 0
+            ? 100.0 * static_cast<double>(edge_color_only_err) / static_cast<double>(edge_color_only_total)
+            : 0.0;
+        const double center_color_only_err_rate = center_color_only_total > 0
+            ? 100.0 * static_cast<double>(center_color_only_err) / static_cast<double>(center_color_only_total)
+            : 0.0;
 
         camdrop::vision::PatternFrameRenderer renderer(dict);
         const cv::Mat src_render = renderer.RenderInterleavedSymbols(src_symbols);
@@ -398,8 +546,13 @@ int main(int argc, char** argv) {
         std::cout << "symbol_acc=" << std::fixed << std::setprecision(3) << sym_acc
                   << "% pattern_acc=" << pat_acc
                   << "% color_acc=" << col_acc << "%\n";
+        std::cout << "color_acc_given_pattern_ok=" << col_acc_given_pat
+                  << "% pattern_ok_total=" << pattern_ok_total
+                  << " color_only_err=" << color_only_err << "\n";
         std::cout << "header_acc=" << header_acc << "% header_total=" << header_total << "\n";
         std::cout << "edge_symbol_err=" << edge_err << "% center_symbol_err=" << center_err << "%\n";
+        std::cout << "edge_color_only_err=" << edge_color_only_err_rate
+                  << "% center_color_only_err=" << center_color_only_err_rate << "%\n";
 
         std::cout << "top_rows:";
         for (int i = 0; i < 5 && i < static_cast<int>(row_rank.size()); ++i) {
@@ -429,6 +582,14 @@ int main(int argc, char** argv) {
             src_label << std::hex << std::setw(2) << std::setfill('0') << confusion_rank[i].src;
             cap_label << std::hex << std::setw(2) << std::setfill('0') << confusion_rank[i].cap;
             std::cout << " " << src_label.str() << "->" << cap_label.str() << "=" << confusion_rank[i].count;
+        }
+        std::cout << "\n";
+        std::cout << "color_confusion:";
+        for (int src_col = 0; src_col < 4; ++src_col) {
+            for (int cap_col = 0; cap_col < 4; ++cap_col) {
+                std::cout << " " << src_col << "->" << cap_col
+                          << "=" << color_confusion[src_col * 4 + cap_col];
+            }
         }
         std::cout << "\n";
 

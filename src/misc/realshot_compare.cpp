@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <numeric>
 #include <optional>
@@ -22,7 +23,9 @@
 #include <opencv2/imgproc.hpp>
 
 #include "util/parallel.hpp"
+#include "vision/color_cnn.hpp"
 #include "vision/frame_pipeline.hpp"
+#include "vision/pattern_cnn.hpp"
 
 namespace fs = std::filesystem;
 
@@ -34,6 +37,7 @@ struct Options {
     std::string model_path = "web/model/best_dynamic.onnx";
     std::string pattern_dir = "pattern_finder/best_v2";
     std::string pattern_cnn_model_path;
+    std::string color_cnn_model_path;
     std::string dump_source_deskew_dir;
     std::string dump_capture_deskew_dir;
     std::string dump_source_payload_csv;
@@ -60,11 +64,48 @@ struct MatchStats {
     size_t best_index = 0;
 };
 
+void apply_pattern_cnn_override(camdrop::vision::RecognizeResult& recognize,
+                                const cv::Mat& deskewed_image,
+                                camdrop::vision::PatternCnnClassifier* classifier) {
+    if (!classifier || !recognize.ok || recognize.payload_symbols.empty()) {
+        return;
+    }
+    const std::vector<uint8_t> payload_patterns = classifier->PredictPayloadPatterns(deskewed_image);
+    if (payload_patterns.size() != recognize.payload_symbols.size()) {
+        return;
+    }
+    for (size_t i = 0; i < recognize.payload_symbols.size(); ++i) {
+        recognize.payload_symbols[i] =
+            static_cast<uint8_t>((recognize.payload_symbols[i] & 0x30U) | (payload_patterns[i] & 0x0FU));
+    }
+}
+
+void apply_color_cnn_override(camdrop::vision::RecognizeResult& recognize,
+                              const cv::Mat& deskewed_image,
+                              camdrop::vision::ColorCnnClassifier* classifier) {
+    if (!classifier || !recognize.ok || recognize.payload_symbols.empty()) {
+        return;
+    }
+    const std::vector<uint8_t> payload_colors = classifier->PredictPayloadColors(deskewed_image);
+    if (payload_colors.size() != recognize.payload_symbols.size()) {
+        return;
+    }
+    const uint8_t pattern_mask = recognize.pattern_bits > 0
+        ? static_cast<uint8_t>((1U << recognize.pattern_bits) - 1U)
+        : 0x0FU;
+    for (size_t i = 0; i < recognize.payload_symbols.size(); ++i) {
+        recognize.payload_symbols[i] =
+            static_cast<uint8_t>(((payload_colors[i] & 0x03U) << recognize.pattern_bits)
+                                 | (recognize.payload_symbols[i] & pattern_mask));
+    }
+}
+
 void print_usage() {
     std::cout
         << "Usage: realshot_compare --source-dir <dir> --capture-dir <dir>\n"
         << "                       [--model <onnx>] [--patterns <dir>]\n"
         << "                       [--pattern-cnn-model <onnx>]\n"
+        << "                       [--color-cnn-model <onnx>]\n"
         << "                       [--dump-source-deskew-dir <dir>] [--dump-capture-deskew-dir <dir>]\n"
         << "                       [--dump-source-payload-csv <csv>] [--dump-capture-payload-csv <csv>]\n"
         << "                       [--capture-deskewed] [--source-deskewed] [--no-patch-track]\n"
@@ -85,6 +126,8 @@ Options parse_args(int argc, char** argv) {
             opts.pattern_dir = argv[++i];
         } else if (arg == "--pattern-cnn-model" && i + 1 < argc) {
             opts.pattern_cnn_model_path = argv[++i];
+        } else if (arg == "--color-cnn-model" && i + 1 < argc) {
+            opts.color_cnn_model_path = argv[++i];
         } else if (arg == "--dump-source-deskew-dir" && i + 1 < argc) {
             opts.dump_source_deskew_dir = argv[++i];
         } else if (arg == "--dump-capture-deskew-dir" && i + 1 < argc) {
@@ -182,6 +225,8 @@ std::string join_symbols_hex(const std::vector<uint8_t>& symbols) {
 FrameData process_file(const fs::path& path,
                        camdrop::vision::FramePipeline* pipeline,
                        camdrop::vision::PatternRecognizer* recognizer,
+                       camdrop::vision::PatternCnnClassifier* pattern_cnn,
+                       camdrop::vision::ColorCnnClassifier* color_cnn,
                        bool deskewed_input,
                        const fs::path& dump_deskew_dir) {
     const cv::Mat image = cv::imread(path.string(), cv::IMREAD_COLOR);
@@ -195,7 +240,9 @@ FrameData process_file(const fs::path& path,
         if (!recognizer) {
             throw std::runtime_error("recognizer is required for deskewed input");
         }
-        const auto decoded = recognizer->Decode(image);
+        auto decoded = recognizer->Decode(image);
+        apply_pattern_cnn_override(decoded, image, pattern_cnn);
+        apply_color_cnn_override(decoded, image, color_cnn);
         if (!decoded.ok) {
             return out;
         }
@@ -233,6 +280,8 @@ std::vector<FrameData> load_frames(const std::vector<fs::path>& files,
                                    const std::string& model_path,
                                    const std::string& pattern_dir,
                                    const std::string& pattern_cnn_model_path,
+                                   const std::string& color_cnn_model_path,
+                                   bool apply_model_overrides,
                                    bool deskewed_input,
                                    const fs::path& dump_deskew_dir,
                                    size_t threads,
@@ -240,6 +289,8 @@ std::vector<FrameData> load_frames(const std::vector<fs::path>& files,
     struct Worker {
         std::optional<camdrop::vision::FramePipeline> pipeline;
         std::optional<camdrop::vision::PatternRecognizer> recognizer;
+        std::unique_ptr<camdrop::vision::PatternCnnClassifier> pattern_cnn;
+        std::unique_ptr<camdrop::vision::ColorCnnClassifier> color_cnn;
     };
 
     std::vector<FrameData> out(files.size());
@@ -253,11 +304,28 @@ std::vector<FrameData> load_frames(const std::vector<fs::path>& files,
             Worker w;
             if (deskewed_input) {
                 w.recognizer.emplace(camdrop::vision::PatternDictionary::LoadFromDirectory(pattern_dir));
+                if (apply_model_overrides && !pattern_cnn_model_path.empty()) {
+                    camdrop::vision::PatternCnnOptions options;
+                    options.ort_threads = std::max(1, ort_threads);
+                    w.pattern_cnn = std::make_unique<camdrop::vision::PatternCnnClassifier>(
+                        pattern_cnn_model_path,
+                        options);
+                }
+                if (apply_model_overrides && !color_cnn_model_path.empty()) {
+                    camdrop::vision::ColorCnnOptions options;
+                    options.ort_threads = std::max(1, ort_threads);
+                    w.color_cnn = std::make_unique<camdrop::vision::ColorCnnClassifier>(
+                        color_cnn_model_path,
+                        options);
+                }
             } else {
                 camdrop::vision::FramePipelineConfig cfg;
                 cfg.model_path = model_path;
                 cfg.pattern_dir = pattern_dir;
-                cfg.pattern_cnn_model_path = pattern_cnn_model_path;
+                if (apply_model_overrides) {
+                    cfg.pattern_cnn_model_path = pattern_cnn_model_path;
+                    cfg.color_cnn_model_path = color_cnn_model_path;
+                }
                 cfg.patch_track_enabled = false;
                 cfg.localizer_options.ort_threads = std::max(1, ort_threads);
                 w.pipeline.emplace(cfg);
@@ -269,6 +337,8 @@ std::vector<FrameData> load_frames(const std::vector<fs::path>& files,
                 files[i],
                 w.pipeline ? &(*w.pipeline) : nullptr,
                 w.recognizer ? &(*w.recognizer) : nullptr,
+                w.pattern_cnn.get(),
+                w.color_cnn.get(),
                 deskewed_input,
                 dump_deskew_dir);
             const size_t cur = ++done;
@@ -419,6 +489,8 @@ int main(int argc, char** argv) {
             opts.model_path,
             opts.pattern_dir,
             opts.pattern_cnn_model_path,
+            opts.color_cnn_model_path,
+            false,
             opts.source_deskewed,
             opts.dump_source_deskew_dir,
             threads,
@@ -429,6 +501,8 @@ int main(int argc, char** argv) {
             opts.model_path,
             opts.pattern_dir,
             opts.pattern_cnn_model_path,
+            opts.color_cnn_model_path,
+            true,
             opts.capture_deskewed,
             opts.dump_capture_deskew_dir,
             threads,

@@ -6,6 +6,7 @@
 
 #include <opencv2/imgproc.hpp>
 
+#include "vision/color_cnn.hpp"
 #include "vision/deskew.hpp"
 #include "vision/pattern_cnn.hpp"
 #include "util/errors.hpp"
@@ -59,6 +60,29 @@ void apply_pattern_cnn_override(RecognizeResult& recognize,
     recognize.payload_tail_bits = payload.tail_bits;
 }
 
+void apply_color_cnn_override(RecognizeResult& recognize,
+                              const cv::Mat& deskewed_image,
+                              ColorCnnClassifier& classifier) {
+    if (!recognize.ok || recognize.payload_symbols.empty()) {
+        return;
+    }
+    const std::vector<uint8_t> payload_colors = classifier.PredictPayloadColors(deskewed_image);
+    if (payload_colors.size() != recognize.payload_symbols.size()) {
+        return;
+    }
+    const uint8_t pattern_mask = recognize.pattern_bits > 0
+        ? static_cast<uint8_t>((1U << recognize.pattern_bits) - 1U)
+        : 0x0FU;
+    for (size_t i = 0; i < recognize.payload_symbols.size(); ++i) {
+        recognize.payload_symbols[i] =
+            static_cast<uint8_t>(((payload_colors[i] & 0x03U) << recognize.pattern_bits)
+                                 | (recognize.payload_symbols[i] & pattern_mask));
+    }
+    const PackedBits payload = pack6_bits(recognize.payload_symbols);
+    recognize.payload_bytes = payload.bytes;
+    recognize.payload_tail_bits = payload.tail_bits;
+}
+
 }  // namespace
 
 FramePipeline::FramePipeline(const FramePipelineConfig& config)
@@ -72,6 +96,11 @@ FramePipeline::FramePipeline(const FramePipelineConfig& config)
         PatternCnnOptions options;
         options.ort_threads = std::max(1, config.localizer_options.ort_threads);
         pattern_cnn_ = std::make_unique<PatternCnnClassifier>(config.pattern_cnn_model_path, options);
+    }
+    if (!config.color_cnn_model_path.empty()) {
+        ColorCnnOptions options;
+        options.ort_threads = std::max(1, config.localizer_options.ort_threads);
+        color_cnn_ = std::make_unique<ColorCnnClassifier>(config.color_cnn_model_path, options);
     }
 }
 FramePipeline::~FramePipeline() = default;
@@ -249,6 +278,9 @@ PipelineResult FramePipeline::Process(const cv::Mat& frame,
     result.recognize = recognizer_.Decode(result.deskewed_image);
     if (pattern_cnn_ && result.recognize.ok) {
         apply_pattern_cnn_override(result.recognize, result.deskewed_image, *pattern_cnn_);
+    }
+    if (color_cnn_ && result.recognize.ok) {
+        apply_color_cnn_override(result.recognize, result.deskewed_image, *color_cnn_);
     }
     result.recognized = result.recognize.ok;
     return result;

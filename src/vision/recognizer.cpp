@@ -67,8 +67,19 @@ static constexpr double COLOR_VOTE_MIN_SPAN = 12.0;
 static constexpr double COLOR_VOTE_MIN_GAP = 6.0;
 static constexpr double COLOR_VOTE_STRONG_SPAN = 32.0;
 static constexpr double COLOR_VOTE_STRONG_GAP = 12.0;
-static constexpr double COLOR_VOTE_ABS_WEIGHT = 0.35;
-static constexpr double COLOR_VOTE_REL_WEIGHT = 0.65;
+static constexpr double COLOR_VOTE_HSL_HUE_SCALE = 4096.0;
+static constexpr double COLOR_VOTE_HSL_SAT_SCALE = 768.0;
+static constexpr double COLOR_VOTE_HSL_LIGHT_SCALE = 96.0;
+static constexpr double COLOR_VOTE_RGB_ABS_SCALE = 0.005;
+static constexpr double COLOR_VOTE_RGB_REL_SCALE = 0.010;
+static constexpr double COLOR_HSL_SELECT_MIN_SAT = 0.08;
+static constexpr double COLOR_HSL_SELECT_HUE_WEIGHT = 3.0;
+static constexpr double COLOR_HSL_SELECT_VALUE_WEIGHT = 0.25;
+static constexpr double COLOR_BG_MAX_VALUE = 28.0;
+static constexpr double COLOR_BG_MAX_CHROMA = 18.0;
+static constexpr double COLOR_BG_MAX_LIGHT = 0.12;
+static constexpr double COLOR_BG_NEUTRAL_MAX_VALUE = 42.0;
+static constexpr double COLOR_RG_ACCEPT_MAX_DIST2 = 0.040;
 static constexpr int LUMA_RECHECK_DIST64 = 5;
 static constexpr int LUMA_RECHECK_DIST16 = 1;
 static constexpr int BINARY_BLOCK_SIZE = 5;
@@ -91,11 +102,26 @@ struct Rgb {
     double b = 0.0;
 };
 
+struct Hsl {
+    double h_deg = 0.0;
+    double s = 0.0;
+    double l = 0.0;
+    bool chromatic = false;
+};
+
+struct RgChromaticity {
+    double r = 0.0;
+    double g = 0.0;
+    bool valid = false;
+};
+
 struct ColorMatch {
     int idx = 0;
     double dist = 0.0;
     double second_dist = 0.0;
     double span = 0.0;
+    bool foreground = false;
+    Rgb rgb {};
 };
 
 struct ColorCalibration {
@@ -108,6 +134,8 @@ struct ColorCalibration {
     bool matrix_active = false;
     std::array<Rgb, NUM_COLORS> refs;
     std::array<Rgb, NUM_COLORS> vote_refs;
+    std::array<Hsl, NUM_COLORS> hsl_refs;
+    std::array<RgChromaticity, NUM_COLORS> rg_refs;
 };
 
 struct PatternDict {
@@ -235,6 +263,63 @@ static const std::array<cv::Vec3b, NUM_COLORS> COLORS_BGR = {{
     cv::Vec3b(255, 255, 0),
     cv::Vec3b(255, 0, 255),
 }};
+
+static double color_target_hue_deg(int color_idx) {
+    switch (color_idx) {
+        case 0: return 60.0;
+        case 1: return 120.0;
+        case 2: return 180.0;
+        case 3: return 300.0;
+        default: return 0.0;
+    }
+}
+
+static double hue_distance_deg(double a_deg, double b_deg) {
+    double diff = std::fmod(std::abs(a_deg - b_deg), 360.0);
+    if (diff < 0.0) diff += 360.0;
+    return diff > 180.0 ? (360.0 - diff) : diff;
+}
+
+static Hsl rgb_to_hsl(const Rgb& rgb) {
+    const double r = rgb.r / 255.0;
+    const double g = rgb.g / 255.0;
+    const double b = rgb.b / 255.0;
+    const double maxv = std::max({r, g, b});
+    const double minv = std::min({r, g, b});
+    const double delta = maxv - minv;
+    const double light = (maxv + minv) * 0.5;
+    if (delta <= 1e-6) {
+        return {0.0, 0.0, light, false};
+    }
+    double hue = 0.0;
+    if (maxv == r) {
+        hue = 60.0 * std::fmod(((g - b) / delta), 6.0);
+    } else if (maxv == g) {
+        hue = 60.0 * (((b - r) / delta) + 2.0);
+    } else {
+        hue = 60.0 * (((r - g) / delta) + 4.0);
+    }
+    if (hue < 0.0) hue += 360.0;
+    const double denom = 1.0 - std::abs(2.0 * light - 1.0);
+    const double sat = denom > 1e-6 ? (delta / denom) : 0.0;
+    return {hue, sat, light, sat > 1e-4};
+}
+
+static bool is_probable_black_background(const Rgb& rgb, const Hsl& hsl) {
+    const double maxv = std::max({rgb.r, rgb.g, rgb.b});
+    const double minv = std::min({rgb.r, rgb.g, rgb.b});
+    const double chroma = maxv - minv;
+    if (!std::isfinite(maxv) || !std::isfinite(chroma)) return true;
+    if (!hsl.chromatic && maxv <= COLOR_BG_NEUTRAL_MAX_VALUE) return true;
+    return (maxv <= COLOR_BG_MAX_VALUE || hsl.l <= COLOR_BG_MAX_LIGHT)
+        && chroma <= COLOR_BG_MAX_CHROMA;
+}
+
+static RgChromaticity rgb_to_rg_chromaticity(const Rgb& rgb) {
+    const double sum = rgb.r + rgb.g + rgb.b;
+    if (!std::isfinite(sum) || sum <= 1e-6) return {};
+    return {rgb.r / sum, rgb.g / sum, true};
+}
 
 static const std::array<std::array<int, 2>, 9> DRIFT_PAIRS = {{
     {{-1, -1}}, {{0, -1}}, {{1, -1}},
@@ -737,6 +822,12 @@ static Rgb subtract_rgb(const Rgb& a, const Rgb& b) {
     };
 }
 
+struct TileForegroundSample {
+    Rgb rgb {};
+    int count = 0;
+    bool valid = false;
+};
+
 /**
  * @brief 计算像素颜色与指定颜色索引的匹配评分
  * @param r 红色分量
@@ -746,13 +837,14 @@ static Rgb subtract_rgb(const Rgb& a, const Rgb& b) {
  * @return 匹配评分
  */
 static double color_rect_score(double r, double g, double b, int color_idx) {
-    switch (color_idx) {
-        case 0: return (r + g) - (b * 2.0);
-        case 1: return (g * 2.0) - (r + b);
-        case 2: return (g + b) - (r * 2.0);
-        case 3: return (r + b) - (g * 2.0);
-        default: return 0.0;
+    const Rgb rgb {r, g, b};
+    const Hsl hsl = rgb_to_hsl(rgb);
+    if (is_probable_black_background(rgb, hsl) || !hsl.chromatic || hsl.s < COLOR_HSL_SELECT_MIN_SAT) {
+        return -1024.0;
     }
+    const double hue_dist = hue_distance_deg(hsl.h_deg, color_target_hue_deg(color_idx));
+    const double maxv = std::max({r, g, b});
+    return hsl.s * 255.0 + maxv * COLOR_HSL_SELECT_VALUE_WEIGHT - hue_dist * COLOR_HSL_SELECT_HUE_WEIGHT;
 }
 
 /**
@@ -1041,6 +1133,59 @@ static ColorCalibration estimate_color_calibration(const cv::Mat& img) {
             static_cast<double>(COLORS_BGR[i][0]),
         };
         calib.vote_refs[i] = stretch_normalized_color_sample(calib.refs[i]);
+        calib.hsl_refs[i] = rgb_to_hsl(calib.refs[i]);
+        calib.rg_refs[i] = rgb_to_rg_chromaticity(calib.refs[i]);
+    }
+
+    auto sample_tile_foreground_mean_rgb = [&](int x0, int y0) -> TileForegroundSample {
+        const int sx = clamp_int(x0, 0, IMG_W - TILE_SIZE);
+        const int sy = clamp_int(y0, 0, IMG_H - TILE_SIZE);
+        double sr = 0.0;
+        double sg = 0.0;
+        double sb = 0.0;
+        double sw = 0.0;
+        int count = 0;
+        for (int pr = 0; pr < TILE_SIZE; ++pr) {
+            for (int pc = 0; pc < TILE_SIZE; ++pc) {
+                const cv::Vec3b px = img.at<cv::Vec3b>(sy + pr, sx + pc);
+                const Rgb rgb = apply_color_transform(
+                    static_cast<double>(px[2]),
+                    static_cast<double>(px[1]),
+                    static_cast<double>(px[0]),
+                    calib
+                );
+                const Hsl hsl = rgb_to_hsl(rgb);
+                if (is_probable_black_background(rgb, hsl)) continue;
+                const double span = std::max({rgb.r, rgb.g, rgb.b}) - std::min({rgb.r, rgb.g, rgb.b});
+                const double weight = std::max(1.0, std::max(span, hsl.s * 255.0));
+                sr += rgb.r * weight;
+                sg += rgb.g * weight;
+                sb += rgb.b * weight;
+                sw += weight;
+                ++count;
+            }
+        }
+        if (count < 3 || sw <= 0.0) return {};
+        return {{sr / sw, sg / sw, sb / sw}, count, true};
+    };
+
+    std::array<std::vector<Rgb>, NUM_COLORS> distributed_refs {};
+    for (int i = 0; i < NUM_COLORS; ++i) {
+        distributed_refs[i].push_back(apply_color_transform(refs[i].r, refs[i].g, refs[i].b, calib));
+    }
+    for (int c = Config::CALIB_COL_BEGIN; c < Config::CALIB_COL_END; ++c) {
+        const int color_idx = (c - Config::CALIB_COL_BEGIN) & 3;
+        const int x0 = MARGIN + c * STRIDE;
+        const int y0 = MARGIN + Config::CALIB_ROW * STRIDE;
+        const TileForegroundSample sample = sample_tile_foreground_mean_rgb(x0, y0);
+        if (sample.valid) {
+            distributed_refs[color_idx].push_back(sample.rgb);
+        }
+    }
+    for (int i = 0; i < NUM_COLORS; ++i) {
+        if (!distributed_refs[i].empty()) {
+            calib.rg_refs[i] = rgb_to_rg_chromaticity(average_rgbs(distributed_refs[i]));
+        }
     }
     return calib;
 }
@@ -1227,19 +1372,35 @@ static ColorMatch nearest_color(const cv::Vec3b& px, const ColorCalibration& cal
         static_cast<double>(px[0]),
         calib
     );
-    const double span = std::max({rgb.r, rgb.g, rgb.b}) - std::min({rgb.r, rgb.g, rgb.b});
-    const Rgb vote_sample = stretch_normalized_color_sample(rgb);
+    const Hsl sample_hsl = rgb_to_hsl(rgb);
+    const bool foreground = !is_probable_black_background(rgb, sample_hsl);
+    const double channel_span = std::max({rgb.r, rgb.g, rgb.b}) - std::min({rgb.r, rgb.g, rgb.b});
+    const double span = foreground ? std::max(channel_span, sample_hsl.s * 255.0) : 0.0;
+    const Rgb vote_sample = foreground ? stretch_normalized_color_sample(rgb) : rgb;
     int best = 0;
     double min_dist = std::numeric_limits<double>::infinity();
     double second_dist = std::numeric_limits<double>::infinity();
     for (int i = 0; i < NUM_COLORS; ++i) {
         const Rgb& ref = calib.refs[i];
+        const Hsl& ref_hsl = calib.hsl_refs[i];
         const double dr = rgb.r - ref.r;
         const double dg = rgb.g - ref.g;
         const double db = rgb.b - ref.b;
         const double abs_dist = dr * dr + dg * dg + db * db;
         const double rel_dist = relative_color_dist(vote_sample, calib.vote_refs[i]);
-        const double dist = abs_dist * COLOR_VOTE_ABS_WEIGHT + rel_dist * COLOR_VOTE_REL_WEIGHT;
+        const double hue_delta = sample_hsl.chromatic
+            ? (hue_distance_deg(sample_hsl.h_deg, ref_hsl.h_deg) / 180.0)
+            : 1.0;
+        const double sat_delta = sample_hsl.s - ref_hsl.s;
+        const double light_delta = sample_hsl.l - ref_hsl.l;
+        const double hsl_dist =
+            hue_delta * hue_delta * COLOR_VOTE_HSL_HUE_SCALE +
+            sat_delta * sat_delta * COLOR_VOTE_HSL_SAT_SCALE +
+            light_delta * light_delta * COLOR_VOTE_HSL_LIGHT_SCALE;
+        const double dist =
+            hsl_dist +
+            abs_dist * COLOR_VOTE_RGB_ABS_SCALE +
+            rel_dist * COLOR_VOTE_RGB_REL_SCALE;
         if (dist < min_dist) {
             second_dist = min_dist;
             min_dist = dist;
@@ -1248,7 +1409,7 @@ static ColorMatch nearest_color(const cv::Vec3b& px, const ColorCalibration& cal
             second_dist = dist;
         }
     }
-    return {best, min_dist, second_dist, span};
+    return {best, min_dist, second_dist, span, foreground, rgb};
 }
 
 struct CellSample10 {
@@ -1478,28 +1639,34 @@ static bool should_prefer_luma_candidate(const CandidateHit& primary,
         && candidate.best_dist16 + 1 < primary.best_dist16;
 }
 
-static std::pair<int, double> decode_color_from_mask(const cv::Mat& img,
+static std::pair<int, double> decode_color_from_tile(const cv::Mat& img,
                                                      int x0,
                                                      int y0,
-                                                     int pat_idx,
-                                                     const PatternDict& dict,
                                                      const ColorCalibration& calib) {
-    const uint32_t best_mask_lo = dict.lo[pat_idx];
-    const uint32_t best_mask_hi = dict.hi[pat_idx];
     std::array<uint16_t, 4> cnt_all {{0, 0, 0, 0}};
     std::array<uint16_t, 4> cnt_strong {{0, 0, 0, 0}};
     std::array<double, 4> dist_all {{0.0, 0.0, 0.0, 0.0}};
     std::array<double, 4> dist_strong {{0.0, 0.0, 0.0, 0.0}};
+    double rg_r_sum = 0.0;
+    double rg_g_sum = 0.0;
+    double rg_weight_sum = 0.0;
+    int rg_valid = 0;
     int valid_all = 0;
     int valid_strong = 0;
     for (int pr = 0; pr < TILE_SIZE; ++pr) {
         for (int pc = 0; pc < TILE_SIZE; ++pc) {
-            const int bit = pr * TILE_SIZE + pc;
-            if (!mask_is_on(best_mask_lo, best_mask_hi, bit)) continue;
             const cv::Vec3b px = img.at<cv::Vec3b>(y0 + pr, x0 + pc);
             const ColorMatch m = nearest_color(px, calib);
+            if (!m.foreground) continue;
+            const RgChromaticity rg = rgb_to_rg_chromaticity(m.rgb);
             const double gap = std::max(0.0, std::sqrt(m.second_dist) - std::sqrt(m.dist));
-            if (m.span < COLOR_VOTE_MIN_SPAN && gap < COLOR_VOTE_MIN_GAP) continue;
+            const double weight = std::max(1.0, m.span);
+            if (rg.valid) {
+                rg_r_sum += rg.r * weight;
+                rg_g_sum += rg.g * weight;
+                rg_weight_sum += weight;
+                ++rg_valid;
+            }
             cnt_all[m.idx] = static_cast<uint16_t>(cnt_all[m.idx] + 1);
             dist_all[m.idx] += m.dist;
             ++valid_all;
@@ -1531,6 +1698,28 @@ static std::pair<int, double> decode_color_from_mask(const cv::Mat& img,
         return {best_color, best_avg};
     };
 
+    if (rg_valid >= 3 && rg_weight_sum > 0.0) {
+        const double avg_r = rg_r_sum / rg_weight_sum;
+        const double avg_g = rg_g_sum / rg_weight_sum;
+        int best_color = 0;
+        double best_dist2 = std::numeric_limits<double>::infinity();
+        double second_dist2 = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < NUM_COLORS; ++i) {
+            const double dr = avg_r - calib.rg_refs[i].r;
+            const double dg = avg_g - calib.rg_refs[i].g;
+            const double dist2 = dr * dr + dg * dg;
+            if (dist2 < best_dist2) {
+                second_dist2 = best_dist2;
+                best_dist2 = dist2;
+                best_color = i;
+            } else if (dist2 < second_dist2) {
+                second_dist2 = dist2;
+            }
+        }
+        if (best_dist2 <= COLOR_RG_ACCEPT_MAX_DIST2 || best_dist2 + 1e-6 < second_dist2) {
+            return {best_color, best_dist2};
+        }
+    }
     if (valid_strong >= std::max(3, valid_all >> 2)) return pick_best(cnt_strong, dist_strong, valid_strong);
     return pick_best(cnt_all, dist_all, valid_all);
 }
@@ -1682,7 +1871,7 @@ static DecodedCell decode_cell_adaptive(const cv::Mat& img,
         }
     }
 
-    const auto color = decode_color_from_mask(img, best.best_sample_x, best.best_sample_y, best.best_pat, dict, calib);
+    const auto color = decode_color_from_tile(img, best.best_sample_x, best.best_sample_y, calib);
     const int p_bits = pattern_bits_for_dict(static_cast<int>(dict.masks64.size()));
     const uint8_t symbol = static_cast<uint8_t>(((color.first << p_bits) | best.best_pat) & 0x3F);
     return {

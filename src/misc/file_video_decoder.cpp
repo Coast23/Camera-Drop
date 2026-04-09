@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -7,6 +6,8 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -30,7 +31,9 @@
 #include "util/config.hpp"
 #include "util/errors.hpp"
 #include "util/parallel.hpp"
+#include "vision/color_cnn.hpp"
 #include "vision/frame_pipeline.hpp"
+#include "vision/pattern_cnn.hpp"
 #include "vision/pattern_dict.hpp"
 #include "vision/recognizer.hpp"
 #include "vision/visual_frame_codec.hpp"
@@ -45,12 +48,14 @@ struct Options {
     std::string model_path = "web/model/best_dynamic.onnx";
     std::string pattern_dir = "pattern_finder/best_v2";
     std::string pattern_cnn_model_path;
+    std::string color_cnn_model_path;
     std::string dump_deskew_dir;
     std::string ffmpeg_bin;
     std::string ffmpeg_frames_dir;
     double acc = 0.95;
     bool deskewed_input = false;
     bool patch_track = true;
+    bool signature_dedupe = false;
     int threads = 0;
     int ort_threads = 1;
 };
@@ -101,6 +106,42 @@ struct DecodedFrame {
     std::vector<uint8_t> frame_bytes;
     std::string error;
 };
+
+void apply_pattern_cnn_override(camdrop::vision::RecognizeResult& recognize,
+                                const cv::Mat& deskewed_image,
+                                camdrop::vision::PatternCnnClassifier* classifier) {
+    if (!classifier || !recognize.ok || recognize.payload_symbols.empty()) {
+        return;
+    }
+    const std::vector<uint8_t> payload_patterns = classifier->PredictPayloadPatterns(deskewed_image);
+    if (payload_patterns.size() != recognize.payload_symbols.size()) {
+        return;
+    }
+    for (size_t i = 0; i < recognize.payload_symbols.size(); ++i) {
+        recognize.payload_symbols[i] =
+            static_cast<uint8_t>((recognize.payload_symbols[i] & 0x30U) | (payload_patterns[i] & 0x0FU));
+    }
+}
+
+void apply_color_cnn_override(camdrop::vision::RecognizeResult& recognize,
+                              const cv::Mat& deskewed_image,
+                              camdrop::vision::ColorCnnClassifier* classifier) {
+    if (!classifier || !recognize.ok || recognize.payload_symbols.empty()) {
+        return;
+    }
+    const std::vector<uint8_t> payload_colors = classifier->PredictPayloadColors(deskewed_image);
+    if (payload_colors.size() != recognize.payload_symbols.size()) {
+        return;
+    }
+    const uint8_t pattern_mask = recognize.pattern_bits > 0
+        ? static_cast<uint8_t>((1U << recognize.pattern_bits) - 1U)
+        : 0x0FU;
+    for (size_t i = 0; i < recognize.payload_symbols.size(); ++i) {
+        recognize.payload_symbols[i] =
+            static_cast<uint8_t>(((payload_colors[i] & 0x03U) << recognize.pattern_bits)
+                                 | (recognize.payload_symbols[i] & pattern_mask));
+    }
+}
 
 uint64_t fnv1a64(const std::vector<uint8_t>& data) {
     uint64_t hash = 1469598103934665603ULL;
@@ -218,7 +259,8 @@ void print_usage() {
         << "Usage: file_video_decoder --input <video-or-dir> [--output <file>] [--acc <0..1>]\n"
         << "                          [--model <onnx>] [--patterns <dir>] [--deskewed-input]\n"
         << "                          [--pattern-cnn-model <onnx>]\n"
-        << "                          [--dump-deskew <dir>] [--no-patch-track]\n"
+        << "                          [--color-cnn-model <onnx>]\n"
+        << "                          [--dump-deskew <dir>] [--no-patch-track] [--signature-dedupe]\n"
         << "                          [--threads <n>] [--ort-threads <n>]\n"
         << "                          [--ffmpeg-bin <path>] [--ffmpeg-frames <dir>]\n";
 }
@@ -237,6 +279,8 @@ Options parse_args(int argc, char** argv) {
             opts.pattern_dir = argv[++i];
         } else if (arg == "--pattern-cnn-model" && i + 1 < argc) {
             opts.pattern_cnn_model_path = argv[++i];
+        } else if (arg == "--color-cnn-model" && i + 1 < argc) {
+            opts.color_cnn_model_path = argv[++i];
         } else if (arg == "--dump-deskew" && i + 1 < argc) {
             opts.dump_deskew_dir = argv[++i];
         } else if (arg == "--ffmpeg-bin" && i + 1 < argc) {
@@ -249,6 +293,8 @@ Options parse_args(int argc, char** argv) {
             opts.deskewed_input = true;
         } else if (arg == "--no-patch-track") {
             opts.patch_track = false;
+        } else if (arg == "--signature-dedupe") {
+            opts.signature_dedupe = true;
         } else if (arg == "--threads" && i + 1 < argc) {
             opts.threads = std::stoi(argv[++i]);
         } else if (arg == "--ort-threads" && i + 1 < argc) {
@@ -446,6 +492,7 @@ int main(int argc, char** argv) {
 
         const size_t thread_count = camdrop::util::resolve_thread_count(opts.threads);
         const bool patch_track_enabled = opts.patch_track && thread_count <= 1;
+        const bool signature_dedupe_enabled = opts.signature_dedupe;
         const int ort_threads = std::max(1, opts.ort_threads);
         constexpr int kCodeSignatureMaxDistance = 72;
 
@@ -459,13 +506,13 @@ int main(int argc, char** argv) {
         } else {
             std::cout << "patch_track: " << (patch_track_enabled ? "on" : "off") << '\n';
         }
+        std::cout << "signature_dedupe: " << (signature_dedupe_enabled ? "on" : "off") << '\n';
         std::cout << "threads: " << thread_count << " ort_threads: " << ort_threads << '\n';
 
         Decoder decoder;
         Stats stats;
         std::unordered_set<uint64_t> seen_hashes;
-        std::vector<std::array<uint8_t, 256>> seen_code_signatures;
-        std::mutex seen_code_signatures_mu;
+        std::vector<std::array<uint8_t, 256>> successful_code_signatures;
         std::mutex log_mu;
         std::atomic<bool> stop_requested{false};
 
@@ -476,13 +523,32 @@ int main(int argc, char** argv) {
         auto worker_fn = [&]() {
             std::optional<camdrop::vision::FramePipeline> pipeline;
             std::optional<camdrop::vision::PatternRecognizer> recognizer;
+            std::unique_ptr<camdrop::vision::PatternCnnClassifier> deskewed_pattern_cnn;
+            std::unique_ptr<camdrop::vision::ColorCnnClassifier> deskewed_color_cnn;
             if (opts.deskewed_input) {
                 recognizer.emplace(camdrop::vision::PatternDictionary::LoadFromDirectory(opts.pattern_dir));
+                if (!opts.pattern_cnn_model_path.empty()) {
+                    camdrop::vision::PatternCnnOptions options;
+                    options.ort_threads = ort_threads;
+                    deskewed_pattern_cnn =
+                        std::make_unique<camdrop::vision::PatternCnnClassifier>(
+                            opts.pattern_cnn_model_path,
+                            options);
+                }
+                if (!opts.color_cnn_model_path.empty()) {
+                    camdrop::vision::ColorCnnOptions options;
+                    options.ort_threads = ort_threads;
+                    deskewed_color_cnn =
+                        std::make_unique<camdrop::vision::ColorCnnClassifier>(
+                            opts.color_cnn_model_path,
+                            options);
+                }
             } else {
                 camdrop::vision::FramePipelineConfig cfg;
                 cfg.model_path = opts.model_path;
                 cfg.pattern_dir = opts.pattern_dir;
                 cfg.pattern_cnn_model_path = opts.pattern_cnn_model_path;
+                cfg.color_cnn_model_path = opts.color_cnn_model_path;
                 cfg.patch_track_enabled = patch_track_enabled;
                 cfg.localizer_options.ort_threads = ort_threads;
                 pipeline.emplace(cfg);
@@ -501,13 +567,15 @@ int main(int argc, char** argv) {
                     if (item.from_file) {
                         image = cv::imread(item.path.string(), cv::IMREAD_COLOR);
                         if (image.empty()) {
-                            std::lock_guard<std::mutex> lock(log_mu);
-                            std::cerr << "Skip unreadable image: " << item.path.string() << '\n';
+                            out.error = "failed to load image: " + item.path.string();
+                            output_queue.push(std::move(out));
                             continue;
                         }
                     } else {
                         image = std::move(item.image);
                         if (image.empty()) {
+                            out.error = "empty input frame";
+                            output_queue.push(std::move(out));
                             continue;
                         }
                     }
@@ -516,28 +584,11 @@ int main(int argc, char** argv) {
                     if (opts.deskewed_input) {
                         out.recognition_attempted = true;
                         recognize = recognizer->Decode(image);
+                        apply_pattern_cnn_override(recognize, image, deskewed_pattern_cnn.get());
+                        apply_color_cnn_override(recognize, image, deskewed_color_cnn.get());
                         out.deskewed = recognize.ok;
                     } else {
-                        bool duplicate_skip = false;
-                        camdrop::vision::PipelineResult result = pipeline->Process(
-                            image,
-                            [&](const cv::Mat& deskewed_image) {
-                                std::array<uint8_t, 256> signature{};
-                                if (!compute_thumb_signature(deskewed_image, &signature)) {
-                                    return false;
-                                }
-                                std::lock_guard<std::mutex> lock(seen_code_signatures_mu);
-                                if (!contains_similar_signature(seen_code_signatures,
-                                                                signature,
-                                                                kCodeSignatureMaxDistance)) {
-                                    return false;
-                                }
-                                out.duplicate_skipped = true;
-                                out.has_deskew_signature = true;
-                                out.deskew_signature = signature;
-                                duplicate_skip = true;
-                                return true;
-                            });
+                        const camdrop::vision::PipelineResult result = pipeline->Process(image);
                         if (!result.localized) {
                             output_queue.push(std::move(out));
                             continue;
@@ -552,10 +603,6 @@ int main(int argc, char** argv) {
                         maybe_dump_deskew(result.deskewed_image, out.name, opts.dump_deskew_dir);
                         out.has_deskew_signature =
                             compute_thumb_signature(result.deskewed_image, &out.deskew_signature);
-                        if (duplicate_skip) {
-                            output_queue.push(std::move(out));
-                            continue;
-                        }
                         out.recognition_attempted = true;
                         if (!result.recognized) {
                             output_queue.push(std::move(out));
@@ -642,13 +689,15 @@ int main(int argc, char** argv) {
 
         bool completed = false;
         uint64_t completed_at_frame = 0;
-        DecodedFrame out;
-        while (output_queue.pop(out)) {
+        std::map<uint64_t, DecodedFrame> ready_frames;
+        uint64_t next_output_index = 0;
+
+        auto process_output = [&](DecodedFrame& out) {
             ++stats.total_frames;
             if (!out.error.empty()) {
                 std::lock_guard<std::mutex> lock(log_mu);
                 std::cerr << "Frame " << out.name << " failed: " << out.error << '\n';
-                continue;
+                return;
             }
             if (out.localized) {
                 ++stats.localized;
@@ -667,28 +716,28 @@ int main(int argc, char** argv) {
             }
             if (out.duplicate_skipped) {
                 ++stats.signature_duplicate_skips;
-                continue;
+                return;
             }
             if (out.recognition_attempted) {
                 ++stats.recognize_attempts;
             }
             if (!out.recognized) {
-                continue;
+                return;
             }
             ++stats.recognized;
-            if (out.has_deskew_signature) {
-                std::lock_guard<std::mutex> lock(seen_code_signatures_mu);
-                if (!contains_similar_signature(seen_code_signatures,
-                                                out.deskew_signature,
-                                                kCodeSignatureMaxDistance)) {
-                    seen_code_signatures.push_back(out.deskew_signature);
-                }
+            if (signature_dedupe_enabled
+                && out.has_deskew_signature
+                && contains_similar_signature(successful_code_signatures,
+                                              out.deskew_signature,
+                                              kCodeSignatureMaxDistance)) {
+                ++stats.signature_duplicate_skips;
+                return;
             }
 
             const uint64_t hash = fnv1a64(out.frame_bytes);
             if (!seen_hashes.insert(hash).second) {
                 ++stats.duplicate_frames;
-                continue;
+                return;
             }
             ++stats.unique_frames;
 
@@ -705,19 +754,54 @@ int main(int argc, char** argv) {
             stats.add_decode_error += packet_stats.fountain_blocks_decode_error;
             if (accepted) {
                 ++stats.accepted_frames;
+                if (signature_dedupe_enabled && out.has_deskew_signature) {
+                    if (!contains_similar_signature(successful_code_signatures,
+                                                    out.deskew_signature,
+                                                    kCodeSignatureMaxDistance)) {
+                        successful_code_signatures.push_back(out.deskew_signature);
+                    }
+                }
             }
             if (!completed && decoder.is_complete()) {
                 try {
                     decoder.save_to_file(opts.output_file);
                 } catch (const DecoderRuntimeError& e) {
                     std::cerr << "Frame " << out.name << " decode failed: " << e.what() << '\n';
-                    continue;
+                    return;
                 }
                 completed = true;
                 completed_at_frame = stats.total_frames;
                 stop_requested.store(true, std::memory_order_relaxed);
                 input_queue.close();
             }
+        };
+
+        auto drain_ready_frames = [&]() {
+            while (!completed) {
+                auto it = ready_frames.find(next_output_index);
+                if (it == ready_frames.end()) {
+                    break;
+                }
+                DecodedFrame ordered = std::move(it->second);
+                ready_frames.erase(it);
+                process_output(ordered);
+                ++next_output_index;
+            }
+            if (completed) {
+                ready_frames.clear();
+            }
+        };
+
+        DecodedFrame out;
+        while (output_queue.pop(out)) {
+            if (completed) {
+                continue;
+            }
+            ready_frames.emplace(out.index, std::move(out));
+            drain_ready_frames();
+        }
+        if (!completed) {
+            drain_ready_frames();
         }
 
         producer.join();
@@ -725,12 +809,12 @@ int main(int argc, char** argv) {
             th.join();
         }
 
-        if (producer_failed.load()) {
-            throw FileNotFoundError(producer_error);
-        }
         if (temp_frames_dir.has_value()) {
             std::error_code ec;
             fs::remove_all(*temp_frames_dir, ec);
+        }
+        if (producer_failed.load()) {
+            throw FileNotFoundError(producer_error);
         }
 
         std::cout << "total_frames=" << stats.total_frames

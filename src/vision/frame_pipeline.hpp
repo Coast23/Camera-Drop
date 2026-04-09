@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 
+#include "vision/color_cnn.hpp"
 #include "vision/pattern_dict.hpp"
 #include "vision/pattern_cnn.hpp"
 #include "vision/recognizer.hpp"
@@ -16,6 +17,7 @@ struct FramePipelineConfig {
     std::string model_path;
     std::string pattern_dir;
     std::string pattern_cnn_model_path;
+    std::string color_cnn_model_path;
     YoloLocalizerOptions localizer_options;
     RecognizerOptions recognizer_options;
     int deskew_width = kImageWidth;
@@ -51,6 +53,7 @@ private:
     YoloLocalizer localizer_;
     PatternRecognizer recognizer_;
     std::unique_ptr<PatternCnnClassifier> pattern_cnn_;
+    std::unique_ptr<ColorCnnClassifier> color_cnn_;
     std::vector<PatchState> patches_;
     CornerQuad last_corners_;
     bool patch_ready_ = false;
