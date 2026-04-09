@@ -1,0 +1,76 @@
+{
+  "summary": "bench/img0026_midseq_colorcnn_summary.txt",
+  "capture_deskew_dir": "bench/img0026_midseq_deskew_colorcnn",
+  "source_payload_csv": "bench/img0026_midseq_source_payload_colorcnn.csv",
+  "kept_capture_frames": 6,
+  "train_capture_frames": [
+    "frame_000002.png",
+    "frame_000004.png",
+    "frame_000005.png",
+    "frame_000007.png"
+  ],
+  "val_capture_frames": [
+    "frame_000001.png"
+  ],
+  "test_capture_frames": [
+    "frame_000008.png"
+  ],
+  "train_samples": 85504,
+  "val_samples": 21376,
+  "test_samples": 21376,
+  "best_epoch": 8,
+  "best_val_acc": 0.9938716317365269,
+  "test_acc": 0.9939651946107785,
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.33424483221805024,
+      "train_acc": 0.9665161863772455,
+      "val_acc": 0.9530782185628742
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.15843781329200654,
+      "train_acc": 0.9602942552395209,
+      "val_acc": 0.9514408682634731
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.13529825424719713,
+      "train_acc": 0.9915676459580839,
+      "val_acc": 0.9844217814371258
+    },
+    {
+      "epoch": 4,
+      "train_loss": 0.12382910369399065,
+      "train_acc": 0.9944213136227545,
+      "val_acc": 0.9886788922155688
+    },
+    {
+      "epoch": 5,
+      "train_loss": 0.11673275185023953,
+      "train_acc": 0.9936962013473054,
+      "val_acc": 0.9896613023952096
+    },
+    {
+      "epoch": 6,
+      "train_loss": 0.11306240628222505,
+      "train_acc": 0.9972749812874252,
+      "val_acc": 0.992374625748503
+    },
+    {
+      "epoch": 7,
+      "train_loss": 0.11026847210829843,
+      "train_acc": 0.9956376309880239,
+      "val_acc": 0.9911583083832335
+    },
+    {
+      "epoch": 8,
+      "train_loss": 0.10734328707892024,
+      "train_acc": 0.9964913922155688,
+      "val_acc": 0.9938716317365269
+    }
+  ],
+  "checkpoint_path": "cnn\\models\\color_cnn_img0026_midseq\\color_cnn_img0026_midseq.pt",
+  "onnx_path": "cnn\\models\\color_cnn_img0026_midseq\\color_cnn_img0026_midseq.onnx"
+}

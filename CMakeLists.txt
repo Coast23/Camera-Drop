@@ -33,6 +33,7 @@ set(VISION_COMMON_SRC
 )
 
 set(VISION_ORT_SRC
+    src/vision/color_cnn.cpp
     src/vision/frame_pipeline.cpp
     src/vision/pattern_cnn.cpp
     src/vision/yolo_localizer.cpp
