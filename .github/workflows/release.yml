@@ -112,6 +112,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release `
             -DOpenCV_DIR="C:\opencv\build" `
             -DONNXRUNTIME_ROOT="C:\onnxruntime" `
+            -DCAMDROP_FFMPEG_EXE="${{ github.workspace }}\third_party\ffmpeg\bin\ffmpeg.exe" `
+            -DCAMDROP_RESOURCE_DIR="${{ github.workspace }}" `
             -DCAMDROP_BUILD_VISION=ON `
             -DCAMDROP_BUILD_ORT_PIPELINE=ON `
             -DCAMDROP_BUILD_MISC_TOOLS=OFF
@@ -155,9 +157,37 @@ jobs:
               Write-Host "Bundled FFmpeg: $($_.Name)"
           }
 
+          foreach ($resourceDir in @("web", "cnn", "pattern_finder")) {
+              $src = Join-Path "build\Release" $resourceDir
+              if (Test-Path $src) {
+                  Copy-Item $src $dist -Recurse
+                  Write-Host "Bundled resources: $resourceDir"
+              } else {
+                  throw "Missing bundled resource directory: $src"
+              }
+          }
+
           Compress-Archive -Path "$dist\*" -DestinationPath camera-drop-tools-windows.zip
           Write-Host "Package contents:"
           Get-ChildItem $dist | Select-Object Name, Length
+
+      - name: Smoke test packaged decoder (Windows)
+        shell: pwsh
+        run: |
+          Push-Location dist
+          try {
+            & .\file_video_decoder.exe `
+              --input "$env:GITHUB_WORKSPACE\bench\frames_1" `
+              --output ".\release_smoke.bin" `
+              --deskewed-input `
+              --threads 1 `
+              --ort-threads 1
+            if ($LASTEXITCODE -ne 0) {
+              throw "packaged file_video_decoder smoke test failed with exit code $LASTEXITCODE"
+            }
+          } finally {
+            Pop-Location
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -225,6 +255,8 @@ jobs:
           cmake -B build -S . \
             -DCMAKE_BUILD_TYPE=Release \
             -DONNXRUNTIME_ROOT=/opt/onnxruntime \
+            -DCAMDROP_FFMPEG_EXE="${GITHUB_WORKSPACE}/third_party/ffmpeg/bin/ffmpeg" \
+            -DCAMDROP_RESOURCE_DIR="${GITHUB_WORKSPACE}" \
             -DCAMDROP_BUILD_VISION=ON \
             -DCAMDROP_BUILD_ORT_PIPELINE=ON \
             -DCAMDROP_BUILD_MISC_TOOLS=OFF
@@ -251,9 +283,29 @@ jobs:
           cp third_party/ffmpeg/bin/ffmpeg dist/
           chmod +x dist/ffmpeg
 
+          for resource_dir in web cnn pattern_finder; do
+            if [ ! -d "build/${resource_dir}" ]; then
+              echo "::error::Missing bundled resource directory build/${resource_dir}"
+              exit 1
+            fi
+            cp -r "build/${resource_dir}" "dist/${resource_dir}"
+            echo "Bundled resources: ${resource_dir}"
+          done
+
           echo "Package contents:"
           ls -lh dist/
           tar -czf camera-drop-tools-linux.tar.gz -C dist .
+
+      - name: Smoke test packaged decoder (Linux)
+        run: |
+          set -e
+          cd dist
+          ./file_video_decoder \
+            --input "${GITHUB_WORKSPACE}/bench/frames_1" \
+            --output ./release_smoke.bin \
+            --deskewed-input \
+            --threads 1 \
+            --ort-threads 1
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
