@@ -176,14 +176,44 @@ jobs:
         run: |
           Push-Location dist
           try {
+            $inputPath = Join-Path $env:RUNNER_TEMP "release_smoke_input.bin"
+            $framesDir = Join-Path $env:RUNNER_TEMP "release_smoke_frames"
+            $videoPath = Join-Path $env:RUNNER_TEMP "release_smoke.mp4"
+            $outputPath = Join-Path $env:RUNNER_TEMP "release_smoke_output.bin"
+            $inputBytes = [byte[]](0..255)
+            [System.IO.File]::WriteAllBytes($inputPath, $inputBytes)
+            if (Test-Path $framesDir) { Remove-Item $framesDir -Recurse -Force }
+
+            & .\file_video_encoder.exe `
+              --input $inputPath `
+              --out-dir $framesDir `
+              --video-out $videoPath `
+              --fps 60 `
+              --target-frames 1 `
+              --limit-frames 1 `
+              --threads 1
+            if ($LASTEXITCODE -ne 0) {
+              throw "packaged file_video_encoder smoke test failed with exit code $LASTEXITCODE"
+            }
+
             & .\file_video_decoder.exe `
-              --input "$env:GITHUB_WORKSPACE\bench\frames_1" `
-              --output ".\release_smoke.bin" `
+              --input $framesDir `
+              --output $outputPath `
               --deskewed-input `
               --threads 1 `
               --ort-threads 1
             if ($LASTEXITCODE -ne 0) {
               throw "packaged file_video_decoder smoke test failed with exit code $LASTEXITCODE"
+            }
+
+            $decodedBytes = [System.IO.File]::ReadAllBytes($outputPath)
+            if ($decodedBytes.Length -lt $inputBytes.Length) {
+              throw "decoded output too short: $($decodedBytes.Length) < $($inputBytes.Length)"
+            }
+            for ($i = 0; $i -lt $inputBytes.Length; $i++) {
+              if ($decodedBytes[$i] -ne $inputBytes[$i]) {
+                throw "decoded bytes mismatch at offset $i"
+              }
             }
           } finally {
             Pop-Location
@@ -300,12 +330,27 @@ jobs:
         run: |
           set -e
           cd dist
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("release_smoke_input.bin")
+          path.write_bytes(bytes(range(256)))
+          PY
+          rm -rf release_smoke_frames
+          ./file_video_encoder \
+            --input ./release_smoke_input.bin \
+            --out-dir ./release_smoke_frames \
+            --video-out ./release_smoke.mp4 \
+            --fps 60 \
+            --target-frames 1 \
+            --limit-frames 1 \
+            --threads 1
           ./file_video_decoder \
-            --input "${GITHUB_WORKSPACE}/bench/frames_1" \
+            --input ./release_smoke_frames \
             --output ./release_smoke.bin \
             --deskewed-input \
             --threads 1 \
             --ort-threads 1
+          cmp -n 256 ./release_smoke_input.bin ./release_smoke.bin
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
