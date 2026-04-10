@@ -96,6 +96,19 @@ jobs:
         shell: pwsh
         run: cmake --build build --config Release --parallel
 
+      - name: Bundle OpenCV runtime for smoke test (Windows)
+        shell: pwsh
+        run: |
+          $binDir = Join-Path $env:GITHUB_WORKSPACE "build\Release"
+          if (-not (Get-ChildItem $binDir -Filter "opencv_world*.dll" -ErrorAction SilentlyContinue)) {
+            $ocvDll = Get-ChildItem "C:\opencv" -Filter "opencv_world*.dll" -Recurse |
+                      Where-Object { $_.Name -notmatch 'd\.dll$' } |
+                      Select-Object -First 1
+            if (-not $ocvDll) { throw "OpenCV release DLL not found" }
+            Copy-Item $ocvDll.FullName $binDir
+            Write-Host "Bundled OpenCV for smoke test: $($ocvDll.Name)"
+          }
+
       - name: Smoke test decoder resources (Windows)
         shell: pwsh
         run: |

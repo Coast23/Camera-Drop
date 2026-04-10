@@ -34,7 +34,7 @@ jobs:
     steps:
       # ── 发布前校验 ──────────────────────────────────────────────
       - name: Validate release inputs
-        if: github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true'
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
         shell: pwsh
         run: |
           if (-not '${{ inputs.version }}') {
@@ -234,7 +234,7 @@ jobs:
     steps:
       # ── 发布前校验 ──────────────────────────────────────────────
       - name: Validate release inputs
-        if: github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true'
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
         run: |
           if [ -z "${{ inputs.version }}" ]; then
             echo "::error::version is required when publish_release is true"
@@ -363,7 +363,7 @@ jobs:
   publish:
     name: Publish GitHub Release
     needs: [build-windows, build-linux]
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true'
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
     runs-on: ubuntu-latest
 
     steps:
