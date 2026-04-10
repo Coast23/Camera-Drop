@@ -236,6 +236,85 @@ std::string quote_arg(const std::string& value) {
     return out;
 }
 
+#ifdef _WIN32
+std::string quote_windows_process_arg(const std::string& value) {
+    const bool needs_quotes = value.empty()
+        || value.find_first_of(" \t\n\v\"") != std::string::npos;
+    if (!needs_quotes) {
+        return value;
+    }
+
+    std::string out;
+    out.reserve(value.size() + 8);
+    out.push_back('"');
+
+    size_t backslashes = 0;
+    for (char ch : value) {
+        if (ch == '\\') {
+            ++backslashes;
+            continue;
+        }
+        if (ch == '"') {
+            out.append(backslashes * 2 + 1, '\\');
+            out.push_back('"');
+            backslashes = 0;
+            continue;
+        }
+        out.append(backslashes, '\\');
+        backslashes = 0;
+        out.push_back(ch);
+    }
+
+    out.append(backslashes * 2, '\\');
+    out.push_back('"');
+    return out;
+}
+
+int run_windows_process(const std::vector<std::string>& args) {
+    if (args.empty()) {
+        return -1;
+    }
+
+    std::string cmdline;
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (i != 0) {
+            cmdline.push_back(' ');
+        }
+        cmdline += quote_windows_process_arg(args[i]);
+    }
+
+    STARTUPINFOA si {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi {};
+    std::vector<char> mutable_cmdline(cmdline.begin(), cmdline.end());
+    mutable_cmdline.push_back('\0');
+
+    const BOOL ok = CreateProcessA(
+        args[0].c_str(),
+        mutable_cmdline.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        0,
+        nullptr,
+        nullptr,
+        &si,
+        &pi);
+    if (!ok) {
+        return -static_cast<int>(GetLastError());
+    }
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exit_code = 0;
+    if (!GetExitCodeProcess(pi.hProcess, &exit_code)) {
+        exit_code = static_cast<DWORD>(-static_cast<int>(GetLastError()));
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(exit_code);
+}
+#endif
+
 uint64_t current_pid() {
 #ifdef _WIN32
     return static_cast<uint64_t>(GetCurrentProcessId());
@@ -425,13 +504,7 @@ int extract_video_frames(const std::string& ffmpeg_bin, const fs::path& input, c
         "rgb24",
         output_glob
     };
-    std::vector<const char*> argv;
-    argv.reserve(args.size() + 1);
-    for (const auto& arg : args) {
-        argv.push_back(arg.c_str());
-    }
-    argv.push_back(nullptr);
-    return _spawnv(_P_WAIT, args[0].c_str(), argv.data());
+    return run_windows_process(args);
 #else
     return std::system(cmd.str().c_str());
 #endif
